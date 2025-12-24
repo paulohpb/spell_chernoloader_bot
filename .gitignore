@@ -1,0 +1,8 @@
+node_modules/
+.env
+debug_error.html
+debug_error_main.html
+dist/
+*.log
+test_regex.js
+test_main_regex.js
