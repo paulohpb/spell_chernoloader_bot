@@ -252,7 +252,7 @@ async function getInstagramMedia(postId: string): Promise<MediaInfo | null> {
         if (videoUrlMatch && videoUrlMatch[1]) {
             let videoUrl = videoUrlMatch[1];
             if (videoUrl.endsWith('\\')) videoUrl = videoUrl.slice(0, -1);
-            videoUrl = videoUrl.replace(/\\\u([0-9a-fA-F]{4})/g, (match, p1) => String.fromCharCode(parseInt(p1, 16)));
+            videoUrl = videoUrl.replace(/\\u([0-9a-fA-F]{4})/g, (match, p1) => String.fromCharCode(parseInt(p1, 16)));
             videoUrl = videoUrl.replace(/\\/g, '');
             return { video_url: videoUrl, __typename: 'GraphVideo' } as MediaInfo;
         }
