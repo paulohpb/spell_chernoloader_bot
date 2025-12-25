@@ -1,6 +1,11 @@
+/**
+ * =============================================================================
+ * ARQUIVO: src/bot.ts
+ * (Atualizado - Adicionado Await nas chamadas do Service)
+ * =============================================================================
+ */
 import { Bot, InputFile } from 'grammy';
 import axios from 'axios';
-import * as fs from 'fs';
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -8,12 +13,12 @@ import path from 'path';
 
 // --- IMPORTS DO JOGO ---
 import { gameService } from './game/services/game.service';
-import { pokemonService } from './game/services/pokemon.service';
+// import { pokemonService } from './game/services/pokemon.service'; // Não usado diretamente aqui por enquanto
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const GAME_SHORT_NAME = 'chernomon'; // O nome que você criou no BotFather
+const GAME_SHORT_NAME = 'chernomon'; 
 const PORT = process.env.PORT || 3000;
-const SERVER_URL = process.env.SERVER_URL || `http://localhost:${PORT}`; // URL pública do servidor
+const SERVER_URL = process.env.SERVER_URL || `http://localhost:${PORT}`; 
 
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN is missing in .env');
@@ -26,14 +31,17 @@ const app = express();
 // --- CONFIGURAÇÃO DO SERVIDOR EXPRESS ---
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../public'))); // Serve o Frontend do jogo
+// Serve o Frontend do jogo
+app.use(express.static(path.join(__dirname, '../public'))); 
 
 // --- API DO JOGO ---
-app.get('/api/game/state', (req, res) => {
+app.get('/api/game/state', async (req, res) => {
     const userId = Number(req.query.userId);
     if (!userId) return res.status(400).json({ error: 'Missing userId' });
     
-    const session = gameService.getSession(userId);
+    // ATUALIZAÇÃO: Adicionado await
+    const session = await gameService.getSession(userId);
+    
     res.json({
         phase: session.state,
         generation: session.generation,
@@ -48,12 +56,18 @@ app.get('/api/game/state', (req, res) => {
 
 app.post('/api/game/action', async (req, res) => {
     const { userId, action, selection } = req.body;
-    const s = gameService.getSession(userId);
     
-    // Lógica simplificada de transição de estado via API
+    // ATUALIZAÇÃO: Adicionado await
+    const s = await gameService.getSession(userId);
+    
     try {
         if (action === 'RESET') {
-            gameService.resetSession(userId);
+            // ATUALIZAÇÃO: Reset agora é async
+            await gameService.resetSession(userId);
+            // Recarrega sessão limpa
+            const newSession = await gameService.getSession(userId);
+            // Pequeno hack para continuar usando 's' na resposta abaixo, ou retornar direto
+            Object.assign(s, newSession); 
         }
         else if (action === 'SELECT_GEN') {
             if (s.state !== 'GEN_ROULETTE') return res.json(s);
@@ -72,7 +86,6 @@ app.post('/api/game/action', async (req, res) => {
         }
         else if (action === 'SPIN_STARTER') {
             if (s.state !== 'STARTER_ROULETTE') return res.json(s);
-            // CORREÇÃO: Usa spinStarter para pegar apenas os iniciais válidos
             const starter = await gameService.spinStarter(s.generation);
             if (starter) {
                 s.team.push(starter);
@@ -81,7 +94,7 @@ app.post('/api/game/action', async (req, res) => {
         }
         else if (action === 'SPIN_START_ADVENTURE') {
             if (s.state !== 'START_ADVENTURE') return res.json(s);
-            s.state = 'GYM_BATTLE'; // Pula direto pro primeiro ginásio no demo
+            s.state = 'GYM_BATTLE'; 
             s.lastEventResult = "Você encontrou o primeiro Líder de Ginásio!";
         }
         else if (action === 'BATTLE_GYM') {
@@ -101,10 +114,12 @@ app.post('/api/game/action', async (req, res) => {
             }
         }
         else if (action === 'EVOLVE' || action === 'SPIN_MAIN_ADVENTURE') {
-            // Lógica simples de avanço
             s.state = 'GYM_BATTLE';
             s.lastEventResult = "Você viaja para a próxima cidade...";
         }
+
+        // ATUALIZAÇÃO CRÍTICA: Salvar o estado após as modificações
+        await gameService.saveSession(s);
 
         res.json({
             phase: s.state,
@@ -121,9 +136,8 @@ app.post('/api/game/action', async (req, res) => {
     }
 });
 
-// --- LÓGICA DO BOT (INSTA SAVER + GAME) ---
+// --- LÓGICA DO BOT (GAME + INSTA SAVER) ---
 
-// Comando para iniciar o jogo
 bot.command('game', async (ctx) => {
     try {
         await ctx.replyWithGame(GAME_SHORT_NAME);
@@ -133,19 +147,15 @@ bot.command('game', async (ctx) => {
     }
 });
 
-// Resposta ao botão "Jogar"
 bot.on('callback_query:game_short_name', async (ctx) => {
-    // URL onde o jogo está hospedado (o próprio servidor Express deste bot)
-    // No local, use HTTPS tunelado (ngrok) ou apenas HTTP se o Telegram permitir (mas precisa HTTPS pra WebApp funcionar bem)
-    // No Railway, SERVER_URL será https://seu-app.railway.app
     const url = `${SERVER_URL}/index.html`; 
     await ctx.answerCallbackQuery({ url });
 });
 
 
-// --- LÓGICA ANTIGA DO INSTA SAVER ---
+// --- LÓGICA LEGADA DO INSTA SAVER (MANTIDA) ---
 
-const IG_LINK_REGEX = /(?:instagram\.com)\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)/;
+const IG_LINK_REGEX = /(?:instagram\.com)\/ (?:p|reel|reels)\/([A-Za-z0-9_-]+)/;
 const X_LINK_REGEX = /(?:twitter\.com|x\.com)\/([A-Za-z0-9_]+)\/status\/([0-9]+)/;
 
 const HEADERS = {
@@ -157,6 +167,8 @@ const HEADERS = {
   'viewport-width': '1280',
 };
 
+const TARGET_GROUP_ID = -1000000000000;
+
 interface MediaInfo {
   video_url: string;
   caption?: string;
@@ -164,11 +176,9 @@ interface MediaInfo {
   __typename?: string;
 }
 
-const TARGET_GROUP_ID = -1000000000000;
-
 bot.on('message', async (ctx) => {
   const text = ctx.message.text || ctx.message.caption || '';
-  console.log(`[MSG] Chat: ${ctx.chat.id}`);
+  //console.log(`[MSG] Chat: ${ctx.chat.id}`); // Debug
 
   if (ctx.chat.type !== 'private' && ctx.chat.id !== TARGET_GROUP_ID) return;
 
@@ -176,15 +186,12 @@ bot.on('message', async (ctx) => {
   const xMatch = text.match(X_LINK_REGEX);
 
   if (igMatch && igMatch[1]) {
-      // ... Lógica Insta (Simplificada aqui para caber, mas mantendo a sua original) ...
       await handleInstagram(ctx, igMatch[1]);
   } else if (xMatch && xMatch[2]) {
-      // ... Lógica X ...
       await handleTwitter(ctx, xMatch[1], xMatch[2]);
   }
 });
 
-// Funções auxiliares para manter o código limpo
 async function handleInstagram(ctx: any, postId: string) {
     const statusMsg = await ctx.reply('🔎 Procurando vídeo no Instagram...', { reply_parameters: { message_id: ctx.message.message_id } });
     try {
@@ -227,7 +234,6 @@ async function handleTwitter(ctx: any, username: string, tweetId: string) {
     }
 }
 
-// Mantendo suas funções de extração (copiadas da versão anterior)
 async function getXMedia(username: string, tweetId: string): Promise<MediaInfo | null> {
     const apiUrl = `https://api.fxtwitter.com/${username}/status/${tweetId}`;
     try {
@@ -245,16 +251,11 @@ async function getXMedia(username: string, tweetId: string): Promise<MediaInfo |
 }
 
 async function getInstagramMedia(postId: string): Promise<MediaInfo | null> {
-    // ... (Sua lógica robusta implementada anteriormente)
-    // Vou simplificar aqui para não estourar o limite de caracteres, 
-    // mas na prática você deve MANTER a função getInstagramMedia que já estava no arquivo.
-    // Como estou sobrescrevendo o arquivo, vou colar ela inteira aqui embaixo.
-    
     const embedUrl = `https://www.instagram.com/p/${postId}/embed/captioned/`;
     try {
         const response = await axios.get(embedUrl, { headers: HEADERS });
         const html = response.data as string;
-        const videoUrlMatch = html.match(/video_url\\?"\s*:\s*\\?"([^\"]+)/);
+        const videoUrlMatch = html.match(/video_url\\?"\s*:\s*\\?"([^"]+)/);
         if (videoUrlMatch && videoUrlMatch[1]) {
             let videoUrl = videoUrlMatch[1];
             if (videoUrl.endsWith('\\')) videoUrl = videoUrl.slice(0, -1);
@@ -271,16 +272,17 @@ async function getInstagramMedia(postId: string): Promise<MediaInfo | null> {
         let auth = undefined;
         let cap = undefined;
 
-        const mainVideoVersionsMatch = mainHtml.match(/"video_versions"\s*:\s*\[\s*\{.*?"url"\s*:\s*"([^"]+)"/);
+        // Modified line to avoid regex literal issues in file writing
+        const mainVideoVersionsMatch = mainHtml.match(new RegExp('"video_versions"\s*:\s*\[\s*\{{\"url\":\"([^\"]+)\"'));
         if (mainVideoVersionsMatch) vUrl = mainVideoVersionsMatch[1];
         
         if (vUrl) {
              if (vUrl.endsWith('\\')) vUrl = vUrl.slice(0, -1);
              vUrl = vUrl.replace(/\\u([0-9a-fA-F]{4})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16)));
              vUrl = vUrl.replace(/\\/g, '');
-             const ownerMatch = mainHtml.match(/"owner":\{[^}]*?"username":"([^"]+)"/);
+             const ownerMatch = mainHtml.match(/"owner":\{[^}]*?"username":"([^\"]+)"/);
              if (ownerMatch) auth = ownerMatch[1];
-             const captionMatch = mainHtml.match(/"caption":\{[^}]*?"text":"([^"]+)"/);
+             const captionMatch = mainHtml.match(/"caption":\{[^}]*?"text":"([^\"]+)"/);
              if (captionMatch) cap = captionMatch[1].replace(/\\u([0-9a-fA-F]{4})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16))).replace(/\\n/g, '\n');
              return { video_url: vUrl, caption: cap, author: auth, __typename: 'GraphVideo' };
         }
