@@ -18,7 +18,6 @@ const els = {
     title: document.getElementById('scene-title'),
     text: document.getElementById('scene-text'),
     sprite: document.getElementById('main-sprite'),
-    wheel: document.getElementById('roulette-wheel'),
     mainBtn: document.getElementById('main-btn'),
     secControls: document.getElementById('secondary-controls'),
     btnOpt1: document.getElementById('btn-option-1'),
@@ -26,6 +25,128 @@ const els = {
 };
 
 if (els.playerName) els.playerName.textContent = user.first_name;
+
+// --- CLASSE DA ROLETA (Baseada no wheel.component.ts) ---
+class Roulette {
+    constructor(canvasId) {
+        this.canvas = document.getElementById(canvasId);
+        this.ctx = this.canvas.getContext('2d');
+        this.items = [];
+        this.rotation = 0;
+        this.spinning = false;
+        this.size = this.canvas.width;
+        this.radius = this.size / 2;
+        this.centerX = this.size / 2;
+        this.centerY = this.size / 2;
+    }
+
+    // Desenha a roleta estática ou em movimento
+    draw(rotation = 0) {
+        this.rotation = rotation;
+        const totalWeight = this.items.length; // Simplificado: peso 1 pra todos
+        const arcSize = (2 * Math.PI) / totalWeight;
+        
+        this.ctx.clearRect(0, 0, this.size, this.size);
+
+        let startAngle = rotation;
+        
+        // Cores padrão do jogo Pokémon
+        const colors = ['#FF5959', '#F5AC78', '#FAE078', '#9DB7F5', '#A7DB8D', '#FA92B2'];
+
+        for (let i = 0; i < this.items.length; i++) {
+            const item = this.items[i];
+            const endAngle = startAngle + arcSize;
+
+            // Fatia
+            this.ctx.beginPath();
+            this.ctx.moveTo(this.centerX, this.centerY);
+            this.ctx.arc(this.centerX, this.centerY, this.radius - 5, startAngle, endAngle);
+            this.ctx.fillStyle = colors[i % colors.length];
+            this.ctx.fill();
+            this.ctx.stroke();
+
+            // Texto
+            this.ctx.save();
+            this.ctx.translate(this.centerX, this.centerY);
+            this.ctx.rotate(startAngle + arcSize / 2);
+            this.ctx.textAlign = "right";
+            this.ctx.fillStyle = "#fff";
+            this.ctx.font = "bold 14px Arial";
+            this.ctx.shadowColor = "black";
+            this.ctx.shadowBlur = 2;
+            this.ctx.fillText(item.label, this.radius - 20, 5);
+            this.ctx.restore();
+
+            startAngle = endAngle;
+        }
+
+        // Desenha o ponteiro (triângulo na direita)
+        this.ctx.beginPath();
+        this.ctx.moveTo(this.size - 10, this.centerY - 10);
+        this.ctx.lineTo(this.size - 10, this.centerY + 10);
+        this.ctx.lineTo(this.size - 30, this.centerY);
+        this.ctx.fillStyle = "white";
+        this.ctx.fill();
+        this.ctx.stroke();
+    }
+
+    // Anima até parar no item alvo (targetLabel)
+    spinTo(targetLabel, onComplete) {
+        if (this.spinning) return;
+        this.spinning = true;
+
+        // Acha o índice do vencedor
+        const winningIndex = this.items.findIndex(i => i.label === targetLabel);
+        if (winningIndex === -1) {
+            console.error("Item alvo não encontrado na roleta:", targetLabel);
+            onComplete();
+            return;
+        }
+
+        const totalWeight = this.items.length;
+        const arcSize = (2 * Math.PI) / totalWeight;
+        
+        // Calcula onde a roleta deve parar para o ponteiro (que está na direita/0 graus) apontar para o item
+        // No canvas, 0 radianos é as 3 horas (direita).
+        const winningAngleStart = winningIndex * arcSize;
+        
+        // Lógica de rotação final: 
+        // Queremos que o winningIndex esteja na posição 0 (direita) no final.
+        // Adicionamos algumas voltas completas (5 voltas = 10 * PI)
+        // Subtraímos o ângulo do item para trazê-lo para o zero.
+        const totalRotations = 5; 
+        const randomOffset = Math.random() * (arcSize * 0.8) + (arcSize * 0.1); // Aleatoriedade dentro da fatia
+        
+        // Fórmula mágica do wheel.component.ts adaptada
+        // O item está em `winningAngleStart`. Para ele ir para 0, precisamos girar `-winningAngleStart`.
+        const targetRotation = (totalRotations * 2 * Math.PI) - winningAngleStart - (arcSize/2); 
+
+        const duration = 4000; // 4 segundos
+        const startTime = performance.now();
+
+        const animate = (currentTime) => {
+            const elapsed = currentTime - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            
+            // Easing function (Cubic Ease Out) - faz desacelerar no final
+            const ease = 1 - Math.pow(1 - progress, 3);
+            
+            const currentRotation = ease * targetRotation;
+            this.draw(currentRotation);
+
+            if (progress < 1) {
+                requestAnimationFrame(animate);
+            } else {
+                this.spinning = false;
+                onComplete();
+            }
+        };
+
+        requestAnimationFrame(animate);
+    }
+}
+
+const roulette = new Roulette('roulette-canvas');
 
 // --- GAME LOGIC ---
 
@@ -45,16 +166,40 @@ async function fetchGameState() {
         renderState(data);
     } catch (e) {
         console.error(e);
-        els.text.textContent = `Error: ${e.message}. \nTry closing and reopening.`;
+        els.text.textContent = `Error: ${e.message}. 
+Try closing and reopening.`;
         els.mainBtn.style.display = 'none'; // Esconde botão se deu erro
     }
 }
 
+// Variável para impedir cliques duplos durante animação
+let isAnimating = false;
+
 async function sendAction(action, payload = {}) {
+    if (isAnimating) return; // Bloqueia se estiver rodando
+
     try {
         els.mainBtn.disabled = true;
-        els.text.textContent = "Loading...";
         
+        // 1. Prepara a Roleta antes de chamar a API (se for uma ação de sorteio)
+        let rouletteItems = null;
+        if (action === 'SPIN_STARTER') {
+            // Exemplo: Lista hardcoded ou baseada na geração selecionada
+            // Idealmente isso viria do backend, mas podemos simular para visual
+            rouletteItems = [
+                { label: 'Planta' }, { label: 'Fogo' }, { label: 'Água' }, { label: '???' } 
+            ];
+            setupRouletteUI(rouletteItems);
+        } else if (action === 'SPIN_MAIN_ADVENTURE' || action === 'SPIN_START_ADVENTURE') {
+             rouletteItems = [
+                { label: 'Captura' }, { label: 'Batalha' }, { label: 'Item' }, { label: 'Nada' }
+            ];
+            setupRouletteUI(rouletteItems);
+        } else {
+             els.text.textContent = "Loading...";
+        }
+
+        // 2. Chama a API
         const res = await fetch(`${API_BASE}/action`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -62,16 +207,77 @@ async function sendAction(action, payload = {}) {
         });
         
         if (!res.ok) throw new Error("Action failed");
-        
-        const data = await res.json();
-        renderState(data);
+        const newState = await res.json();
+
+        // 3. Se configuramos a roleta, rodamos ela até o resultado
+        if (rouletteItems) {
+            isAnimating = true;
+            
+            // Decidir qual label ganhar baseada no novo estado
+            let targetLabel = decideTargetLabel(action, newState, rouletteItems);
+            
+            roulette.spinTo(targetLabel, () => {
+                isAnimating = false;
+                // Esconde roleta e mostra resultado final
+                document.getElementById('roulette-canvas').style.display = 'none';
+                els.sprite.style.display = 'block'; // Volta sprite se tiver
+                renderState(newState);
+            });
+        } else {
+            // Sem roleta, renderiza direto
+            renderState(newState);
+        }
+
     } catch (e) {
         console.error(e);
-        els.text.textContent = "Connection lost. Tap to retry.";
-        els.mainBtn.onclick = () => sendAction(action, payload);
+        isAnimating = false;
+        els.text.textContent = "Erro. Tente novamente.";
     } finally {
-        els.mainBtn.disabled = false;
+        if (!isAnimating) els.mainBtn.disabled = false;
     }
+}
+
+function setupRouletteUI(items) {
+    // Esconde tudo e mostra só o Canvas
+    els.sprite.style.display = 'none';
+    els.text.textContent = "Sorteando...";
+    els.mainBtn.style.display = 'none';
+    els.secControls.style.display = 'none';
+    
+    const canvas = document.getElementById('roulette-canvas');
+    canvas.style.display = 'block';
+    
+    roulette.items = items;
+    roulette.draw(0);
+}
+
+// Função auxiliar para "adivinhar" o que a API escolheu para a roleta parar visualmente
+function decideTargetLabel(action, state, items) {
+    // Tenta encontrar algo nos itens que combine com o resultado
+    // Como a API retorna o "Próximo Estado" e não exatamente "Você tirou X", 
+    // precisamos inferir ou pegar o nome do Pokémon
+    
+    if (action === 'SPIN_STARTER') {
+        const newPokemon = state.team[state.team.length - 1]; // O último pkm adicionado
+        // Hack visual: substitui um dos itens da roleta pelo nome do pokemon que ganhamos
+        // para garantir que a roleta pare no nome certo
+        items[0].label = newPokemon.name; 
+        return newPokemon.name;
+    }
+    
+    if (action === 'SPIN_START_ADVENTURE' || action === 'SPIN_MAIN_ADVENTURE') {
+        // Se mudou para GYM_BATTLE, foi batalha
+        if (state.phase === 'GYM_BATTLE') return 'Batalha';
+        // Se ganhou item, retorna Item, etc...
+        // Para simplificar, vamos fazer o mesmo hack:
+        // O backend deve mandar `lastEventResult` tipo "Você encontrou um Pidgey!"
+        // Vamos forçar o item 0 a ser o resultado
+        const resume = state.lastEventResult ? state.lastEventResult.split(' ')[0] + '...' : 'Sorte!';
+        items[0].label = "Sorte!"; // Texto genérico ou extraído
+        return "Sorte!";
+    }
+
+    return items[0].label; // Fallback
 }
 
 function renderState(state) {
@@ -81,7 +287,7 @@ function renderState(state) {
 
     // Reset UI
     els.sprite.style.display = 'none';
-    els.wheel.style.display = 'none';
+    // els.wheel.style.display = 'none'; // Removed as we use canvas now
     els.secControls.style.display = 'none';
     els.mainBtn.style.display = 'none'; // Esconde botão principal por padrão em fases de escolha
     els.secControls.innerHTML = ''; // Limpa botões secundários
