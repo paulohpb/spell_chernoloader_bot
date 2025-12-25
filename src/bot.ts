@@ -265,4 +265,27 @@ async function getInstagramMedia(postId: string): Promise<MediaInfo | null> {
         let auth = undefined;
         let cap = undefined;
 
-        const mainVideoVersionsMatch = mainHtml.match(/
+        const mainVideoVersionsMatch = mainHtml.match(/"video_versions"\s*:\s*\[\s*\{.*?"url"\s*:\s*"([^"]+)"/);
+        if (mainVideoVersionsMatch) vUrl = mainVideoVersionsMatch[1];
+        
+        if (vUrl) {
+             if (vUrl.endsWith('\\')) vUrl = vUrl.slice(0, -1);
+             vUrl = vUrl.replace(/\\u([0-9a-fA-F]{4})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16)));
+             vUrl = vUrl.replace(/\\/g, '');
+             const ownerMatch = mainHtml.match(/"owner":\{[^}]*?"username":"([^"]+)"/);
+             if (ownerMatch) auth = ownerMatch[1];
+             const captionMatch = mainHtml.match(/"caption":\{[^}]*?"text":"([^"]+)"/);
+             if (captionMatch) cap = captionMatch[1].replace(/\\u([0-9a-fA-F]{4})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16))).replace(/\\n/g, '\n');
+             return { video_url: vUrl, caption: cap, author: auth, __typename: 'GraphVideo' };
+        }
+        return null;
+    } catch { return null; }
+}
+
+// INICIAR TUDO
+app.listen(PORT, () => {
+    console.log(`Web Server running on port ${PORT}`);
+});
+
+bot.start();
+console.log('Bot started!');
