@@ -2,10 +2,12 @@ const tg = window.Telegram.WebApp;
 tg.expand(); // Expand to full height
 
 // User info from Telegram
-const user = tg.initDataUnsafe.user;
-const userId = user ? user.id : 0; // Fallback for testing outside TG
+// Se initDataUnsafe não tiver user (ex: testando no navegador fora do TG), usa um ID fake
+const user = tg.initDataUnsafe?.user || { id: 12345, first_name: 'TestUser' };
+const userId = user.id;
 
 // API Base URL (Relative path since we serve from the same bot)
+// Se der erro de fetch, tente colocar a URL completa aqui para testar, mas relativo deve funcionar no Railway
 const API_BASE = '/api/game';
 
 // DOM Elements
@@ -23,20 +25,28 @@ const els = {
     btnOpt2: document.getElementById('btn-option-2')
 };
 
-if (user) {
-    els.playerName.textContent = user.first_name;
-}
+if (els.playerName) els.playerName.textContent = user.first_name;
 
 // --- GAME LOGIC ---
 
 async function fetchGameState() {
     try {
+        // Mostra loading inicial
+        els.text.textContent = "Connecting to server...";
+        
         const res = await fetch(`${API_BASE}/state?userId=${userId}`);
+        
+        if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`Server Error (${res.status}): ${errText}`);
+        }
+
         const data = await res.json();
         renderState(data);
     } catch (e) {
         console.error(e);
-        els.text.textContent = "Error connecting to server...";
+        els.text.textContent = `Error: ${e.message}. \nTry closing and reopening.`;
+        els.mainBtn.style.display = 'none'; // Esconde botão se deu erro
     }
 }
 
@@ -50,10 +60,15 @@ async function sendAction(action, payload = {}) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userId, action, ...payload })
         });
+        
+        if (!res.ok) throw new Error("Action failed");
+        
         const data = await res.json();
         renderState(data);
     } catch (e) {
         console.error(e);
+        els.text.textContent = "Connection lost. Tap to retry.";
+        els.mainBtn.onclick = () => sendAction(action, payload);
     } finally {
         els.mainBtn.disabled = false;
     }
@@ -69,9 +84,12 @@ function renderState(state) {
     els.wheel.style.display = 'none';
     els.secControls.style.display = 'none';
     els.mainBtn.style.display = 'block';
-    els.mainBtn.onclick = null;
+    els.mainBtn.onclick = null; // Clear previous listener
 
     // Render based on Phase
+    // Se o estado for inválido ou inicial, força GEN_ROULETTE
+    if (!state.phase) state.phase = 'GEN_ROULETTE';
+
     switch (state.phase) {
         case 'GEN_ROULETTE':
             els.title.textContent = "Choose Generation";
@@ -104,6 +122,9 @@ function renderState(state) {
                 els.text.textContent = "Your journey begins. What will you do first?";
                 els.mainBtn.textContent = "🎲 SPIN EVENT";
                 els.mainBtn.onclick = () => sendAction('SPIN_START_ADVENTURE');
+            } else {
+                // Estado inconsistente (sem time), reseta
+                sendAction('RESET');
             }
             break;
 
@@ -111,6 +132,8 @@ function renderState(state) {
         case 'GYM_BATTLE':
             if (state.lastEventResult) {
                 els.text.textContent = state.lastEventResult;
+            } else {
+                els.text.textContent = "Adventure awaits...";
             }
             
             if (state.phase === 'GYM_BATTLE') {
@@ -124,12 +147,12 @@ function renderState(state) {
             }
             
             // Show current active pokemon
-            if (state.team.length > 0) showPokemon(state.team[0]);
+            if (state.team && state.team.length > 0) showPokemon(state.team[0]);
             break;
             
         case 'EVOLUTION':
             els.title.textContent = "Evolution?";
-            els.text.textContent = "You won the badge! Checking for evolutions...";
+            els.text.textContent = state.lastEventResult || "You won the badge! Checking for evolutions...";
             els.mainBtn.textContent = "🧬 CHECK EVOLUTION";
             els.mainBtn.onclick = () => sendAction('EVOLVE');
             break;
@@ -137,14 +160,14 @@ function renderState(state) {
         case 'VICTORY':
             els.title.textContent = "🏆 CHAMPION! 🏆";
             els.text.textContent = "You have defeated all Gym Leaders! You are the Chernomon Master!";
-            if (state.team.length > 0) showPokemon(state.team[0]); // MVP
+            if (state.team && state.team.length > 0) showPokemon(state.team[0]); 
             els.mainBtn.textContent = "🔄 PLAY AGAIN";
             els.mainBtn.onclick = () => sendAction('RESET');
             break;
 
         case 'GAME_OVER':
             els.title.textContent = "☠️ GAME OVER";
-            els.text.textContent = "You blacked out...";
+            els.text.textContent = state.lastEventResult || "You blacked out...";
             els.mainBtn.textContent = "🔄 RESTART";
             els.mainBtn.onclick = () => sendAction('RESET');
             break;
@@ -153,16 +176,13 @@ function renderState(state) {
 
 function showPokemon(pokemon) {
     els.sprite.style.display = 'block';
-    // Use Showdown sprites or PokeAPI
     const shinyStr = pokemon.shiny ? 'shiny/' : '';
-    // Fix names for URL (lowercase)
-    const name = pokemon.name.toLowerCase(); 
-    els.sprite.src = `https://img.pokemondb.net/sprites/home/${shinyStr}${name}.png`;
+    const name = pokemon.name.toLowerCase().replace(/ /g, '-').replace(/[^a-z0-9-]/g, ''); 
     
-    // Fallback if image fails (some names differ)
-    els.sprite.onerror = () => {
-        els.sprite.src = `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${pokemon.shiny?'shiny/':''}${pokemon.id}.png`;
-    };
+    // Tenta carregar do PokeAPI primeiro que é mais estável
+    const pokeApiUrl = `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${pokemon.shiny?'shiny/':''}${pokemon.id}.png`;
+    
+    els.sprite.src = pokeApiUrl;
 }
 
 // Start
