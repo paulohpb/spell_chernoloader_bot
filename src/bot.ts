@@ -271,3 +271,7 @@ async function getInstagramMedia(postId: string): Promise<MediaInfo | null> {
     return null;
   }
 }
+
+// Start the bot
+bot.start();
+console.log('Bot is running...');
