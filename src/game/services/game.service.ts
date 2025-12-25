@@ -1,10 +1,18 @@
-import { PlayerSession, AdventureEvent, Item } from '../types';
+/**
+ * =============================================================================
+ * ARQUIVO: src/game/services/game.service.ts
+ * (Atualizado - Agora usa o repository e métodos async)
+ * =============================================================================
+ */
+import { PlayerSession, AdventureEvent } from '../types';
 import { pokemonService } from './pokemon.service';
+import { SessionRepository } from '../repository';
+import { JsonSessionRepository } from '../repositories/json-repository';
 
 export class GameService {
-  private sessions: Map<number, PlayerSession> = new Map();
+  private repository: SessionRepository;
 
-  // Dados dos Iniciais por Geração (ID e Nome para Fallback)
+  // Dados dos Iniciais por Geração
   private starters: Record<number, {id: number, name: string}[]> = {
     1: [{id: 1, name: 'Bulbasaur'}, {id: 4, name: 'Charmander'}, {id: 7, name: 'Squirtle'}, {id: 25, name: 'Pikachu'}],
     2: [{id: 152, name: 'Chikorita'}, {id: 155, name: 'Cyndaquil'}, {id: 158, name: 'Totodile'}],
@@ -16,7 +24,6 @@ export class GameService {
     8: [{id: 810, name: 'Grookey'}, {id: 813, name: 'Scorbunny'}, {id: 816, name: 'Sobble'}]
   };
 
-  // Pesos para eventos (Aventura)
   private startAdventureWeights: { item: AdventureEvent; weight: number }[] = [
     { item: 'CATCH_POKEMON', weight: 2 },
     { item: 'BATTLE_TRAINER', weight: 2 },
@@ -44,9 +51,17 @@ export class GameService {
     { item: 'RIVAL', weight: 1 },
   ];
 
-  getSession(userId: number): PlayerSession {
-    if (!this.sessions.has(userId)) {
-      this.sessions.set(userId, {
+  constructor() {
+      // Injeta a dependência do Repositório JSON
+      this.repository = new JsonSessionRepository();
+  }
+
+  // Busca sessão ou cria nova (agora ASSÍNCRONO)
+  async getSession(userId: number): Promise<PlayerSession> {
+    let session = await this.repository.getSession(userId);
+    
+    if (!session) {
+      session = {
         userId,
         state: 'GEN_ROULETTE',
         gender: 'male',
@@ -57,13 +72,20 @@ export class GameService {
         items: [{ id: 'potion', name: 'Poção', description: 'Revive o time', count: 1 }],
         badges: 0,
         gymRetriesLeft: 0
-      });
+      };
+      // Salva a nova sessão imediatamente
+      await this.repository.saveSession(session);
     }
-    return this.sessions.get(userId)!;
+    return session;
   }
 
-  resetSession(userId: number) {
-    this.sessions.delete(userId);
+  // Método explícito para salvar sessão após modificações
+  async saveSession(session: PlayerSession): Promise<void> {
+      await this.repository.saveSession(session);
+  }
+
+  async resetSession(userId: number): Promise<PlayerSession> {
+    await this.repository.deleteSession(userId);
     return this.getSession(userId);
   }
 
@@ -86,23 +108,21 @@ export class GameService {
     return this.spin([{ item: 'male', weight: 1 }, { item: 'female', weight: 1 }]) as 'male' | 'female';
   }
 
-  // NOVA FUNÇÃO: Sorteia um inicial válido da geração atual
   async spinStarter(generation: number) {
       const validStarters = this.starters[generation] || this.starters[1];
       const pick = validStarters[Math.floor(Math.random() * validStarters.length)];
-      const isShiny = Math.random() < 0.02; // 2% chance
+      const isShiny = Math.random() < 0.02; 
       
       const mon = await pokemonService.getPokemon(pick.id, isShiny);
       
       if (mon) return mon;
 
-      // Fallback se a API falhar
       return {
           id: pick.id,
           name: pick.name,
-          power: 1, // Power básico
+          power: 1, 
           shiny: isShiny,
-          baseStatsTotal: 300 // Média baixa
+          baseStatsTotal: 300 
       };
   }
 

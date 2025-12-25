@@ -6,3 +6,4 @@ dist/
 *.log
 test_regex.js
 test_main_regex.js
+data/
