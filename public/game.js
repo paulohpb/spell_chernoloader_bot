@@ -82,32 +82,52 @@ function renderState(state) {
     // Reset UI
     els.sprite.style.display = 'none';
     els.wheel.style.display = 'none';
-    els.wheel.textContent = '⚽'; // Pokébola girando
     els.secControls.style.display = 'none';
-    els.mainBtn.style.display = 'block';
-    els.mainBtn.onclick = null; // Clear previous listener
+    els.mainBtn.style.display = 'none'; // Esconde botão principal por padrão em fases de escolha
+    els.secControls.innerHTML = ''; // Limpa botões secundários
 
     // Render based on Phase
-    // Se o estado for inválido ou inicial, força GEN_ROULETTE
     if (!state.phase) state.phase = 'GEN_ROULETTE';
 
     switch (state.phase) {
         case 'GEN_ROULETTE':
             els.title.textContent = "Escolha a Geração";
-            els.text.textContent = "Gire a roleta para definir sua Geração Pokémon!";
-            els.wheel.style.display = 'block';
-            els.mainBtn.textContent = "🎲 GIRAR GERAÇÃO";
-            els.mainBtn.onclick = () => sendAction('SPIN_GEN');
+            els.text.textContent = "Selecione sua geração Pokémon favorita:";
+            els.secControls.style.display = 'flex';
+            els.secControls.style.flexWrap = 'wrap';
+            els.secControls.style.justifyContent = 'center';
+            
+            for (let i = 1; i <= 8; i++) {
+                const btn = document.createElement('button');
+                btn.className = 'game-btn small';
+                btn.style.width = '45px';
+                btn.textContent = i;
+                btn.onclick = () => sendAction('SELECT_GEN', { selection: i });
+                els.secControls.appendChild(btn);
+            }
             break;
 
         case 'GENDER_ROULETTE':
             els.title.textContent = "Informações do Treinador";
             els.text.textContent = `Geração ${state.generation} selecionada! Agora, você é Menino ou Menina?`;
-            els.mainBtn.textContent = "🎲 GIRAR GÊNERO";
-            els.mainBtn.onclick = () => sendAction('SPIN_GENDER');
+            els.secControls.style.display = 'flex';
+            
+            const btnBoy = document.createElement('button');
+            btnBoy.className = 'game-btn small';
+            btnBoy.textContent = '👦 Menino';
+            btnBoy.onclick = () => sendAction('SELECT_GENDER', { selection: 'male' });
+            
+            const btnGirl = document.createElement('button');
+            btnGirl.className = 'game-btn small';
+            btnGirl.textContent = '👧 Menina';
+            btnGirl.onclick = () => sendAction('SELECT_GENDER', { selection: 'female' });
+
+            els.secControls.appendChild(btnBoy);
+            els.secControls.appendChild(btnGirl);
             break;
 
         case 'STARTER_ROULETTE':
+            els.mainBtn.style.display = 'block'; // Volta o botão principal
             els.title.textContent = "Seu Parceiro";
             els.text.textContent = `Você é ${state.gender === 'male' ? 'um Menino' : 'uma Menina'}! Hora de pegar seu Pokémon Inicial.`;
             els.mainBtn.textContent = "🎲 PEGAR INICIAL";

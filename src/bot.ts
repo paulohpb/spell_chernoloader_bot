@@ -47,7 +47,7 @@ app.get('/api/game/state', (req, res) => {
 });
 
 app.post('/api/game/action', async (req, res) => {
-    const { userId, action } = req.body;
+    const { userId, action, selection } = req.body;
     const s = gameService.getSession(userId);
     
     // Lógica simplificada de transição de estado via API
@@ -55,15 +55,20 @@ app.post('/api/game/action', async (req, res) => {
         if (action === 'RESET') {
             gameService.resetSession(userId);
         }
-        else if (action === 'SPIN_GEN') {
+        else if (action === 'SELECT_GEN') {
             if (s.state !== 'GEN_ROULETTE') return res.json(s);
-            s.generation = gameService.spinGen();
-            s.state = 'GENDER_ROULETTE';
+            const gen = Number(selection);
+            if (gen >= 1 && gen <= 8) {
+                s.generation = gen;
+                s.state = 'GENDER_ROULETTE';
+            }
         }
-        else if (action === 'SPIN_GENDER') {
+        else if (action === 'SELECT_GENDER') {
             if (s.state !== 'GENDER_ROULETTE') return res.json(s);
-            s.gender = gameService.spinGender();
-            s.state = 'STARTER_ROULETTE';
+            if (selection === 'male' || selection === 'female') {
+                s.gender = selection;
+                s.state = 'STARTER_ROULETTE';
+            }
         }
         else if (action === 'SPIN_STARTER') {
             if (s.state !== 'STARTER_ROULETTE') return res.json(s);
