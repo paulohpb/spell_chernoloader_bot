@@ -267,3 +267,7 @@ async function getInstagramMedia(postId: string): Promise<MediaInfo | null> {
 
     return null;
   } catch (error) {
+    console.error('Error fetching Instagram media:', error);
+    return null;
+  }
+}
