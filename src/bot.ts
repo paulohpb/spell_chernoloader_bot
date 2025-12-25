@@ -67,7 +67,8 @@ app.post('/api/game/action', async (req, res) => {
         }
         else if (action === 'SPIN_STARTER') {
             if (s.state !== 'STARTER_ROULETTE') return res.json(s);
-            const starter = await pokemonService.getRandomPokemon(s.generation); // Simplificado para random do gen
+            // CORREÇÃO: Usa spinStarter para pegar apenas os iniciais válidos
+            const starter = await gameService.spinStarter(s.generation);
             if (starter) {
                 s.team.push(starter);
                 s.state = 'START_ADVENTURE';
@@ -76,7 +77,7 @@ app.post('/api/game/action', async (req, res) => {
         else if (action === 'SPIN_START_ADVENTURE') {
             if (s.state !== 'START_ADVENTURE') return res.json(s);
             s.state = 'GYM_BATTLE'; // Pula direto pro primeiro ginásio no demo
-            s.lastEventResult = "You encounter the first Gym Leader!";
+            s.lastEventResult = "Você encontrou o primeiro Líder de Ginásio!";
         }
         else if (action === 'BATTLE_GYM') {
             if (s.state !== 'GYM_BATTLE') return res.json(s);
@@ -84,11 +85,11 @@ app.post('/api/game/action', async (req, res) => {
             if (won) {
                 s.badges++;
                 s.round++;
-                s.lastEventResult = "Victory! You earned a badge.";
+                s.lastEventResult = "Vitória! Você ganhou uma insígnia.";
                 s.state = s.badges >= 8 ? 'VICTORY' : 'EVOLUTION';
             } else {
                 if (gameService.usePotion(s)) {
-                    s.lastEventResult = "Defeat! Used potion to revive.";
+                    s.lastEventResult = "Derrota! Usou uma poção para reviver.";
                 } else {
                     s.state = 'GAME_OVER';
                 }
@@ -97,7 +98,7 @@ app.post('/api/game/action', async (req, res) => {
         else if (action === 'EVOLVE' || action === 'SPIN_MAIN_ADVENTURE') {
             // Lógica simples de avanço
             s.state = 'GYM_BATTLE';
-            s.lastEventResult = "You travel to the next city...";
+            s.lastEventResult = "Você viaja para a próxima cidade...";
         }
 
         res.json({

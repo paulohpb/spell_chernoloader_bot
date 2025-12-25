@@ -82,6 +82,7 @@ function renderState(state) {
     // Reset UI
     els.sprite.style.display = 'none';
     els.wheel.style.display = 'none';
+    els.wheel.textContent = '⚽'; // Pokébola girando
     els.secControls.style.display = 'none';
     els.mainBtn.style.display = 'block';
     els.mainBtn.onclick = null; // Clear previous listener
@@ -92,24 +93,24 @@ function renderState(state) {
 
     switch (state.phase) {
         case 'GEN_ROULETTE':
-            els.title.textContent = "Choose Generation";
-            els.text.textContent = "Spin the roulette to pick your Pokémon Generation!";
+            els.title.textContent = "Escolha a Geração";
+            els.text.textContent = "Gire a roleta para definir sua Geração Pokémon!";
             els.wheel.style.display = 'block';
-            els.mainBtn.textContent = "🎲 SPIN GENERATION";
+            els.mainBtn.textContent = "🎲 GIRAR GERAÇÃO";
             els.mainBtn.onclick = () => sendAction('SPIN_GEN');
             break;
 
         case 'GENDER_ROULETTE':
-            els.title.textContent = "Trainer Info";
-            els.text.textContent = `Generation ${state.generation} selected! Now, are you a Boy or a Girl?`;
-            els.mainBtn.textContent = "🎲 SPIN GENDER";
+            els.title.textContent = "Informações do Treinador";
+            els.text.textContent = `Geração ${state.generation} selecionada! Agora, você é Menino ou Menina?`;
+            els.mainBtn.textContent = "🎲 GIRAR GÊNERO";
             els.mainBtn.onclick = () => sendAction('SPIN_GENDER');
             break;
 
         case 'STARTER_ROULETTE':
-            els.title.textContent = "Your Partner";
-            els.text.textContent = `You are a ${state.gender === 'male' ? 'Boy' : 'Girl'}! Time to get your Starter Pokémon.`;
-            els.mainBtn.textContent = "🎲 GET STARTER";
+            els.title.textContent = "Seu Parceiro";
+            els.text.textContent = `Você é ${state.gender === 'male' ? 'um Menino' : 'uma Menina'}! Hora de pegar seu Pokémon Inicial.`;
+            els.mainBtn.textContent = "🎲 PEGAR INICIAL";
             els.mainBtn.onclick = () => sendAction('SPIN_STARTER');
             break;
 
@@ -118,9 +119,9 @@ function renderState(state) {
             const starter = state.team[0];
             if (starter) {
                 showPokemon(starter);
-                els.title.textContent = `You got ${starter.name}!`;
-                els.text.textContent = "Your journey begins. What will you do first?";
-                els.mainBtn.textContent = "🎲 SPIN EVENT";
+                els.title.textContent = `Você obteve ${starter.name}!`;
+                els.text.textContent = "Sua jornada começa. O que fará primeiro?";
+                els.mainBtn.textContent = "🎲 GIRAR EVENTO";
                 els.mainBtn.onclick = () => sendAction('SPIN_START_ADVENTURE');
             } else {
                 // Estado inconsistente (sem time), reseta
@@ -133,16 +134,16 @@ function renderState(state) {
             if (state.lastEventResult) {
                 els.text.textContent = state.lastEventResult;
             } else {
-                els.text.textContent = "Adventure awaits...";
+                els.text.textContent = "A aventura aguarda...";
             }
             
             if (state.phase === 'GYM_BATTLE') {
-                els.title.textContent = "⚔️ Gym Battle!";
-                els.mainBtn.textContent = "⚔️ FIGHT LEADER";
+                els.title.textContent = "⚔️ Batalha de Ginásio!";
+                els.mainBtn.textContent = "⚔️ LUTAR COM LÍDER";
                 els.mainBtn.onclick = () => sendAction('BATTLE_GYM');
             } else {
-                els.title.textContent = "Adventure";
-                els.mainBtn.textContent = "🎲 CONTINUE";
+                els.title.textContent = "Aventura";
+                els.mainBtn.textContent = "🎲 CONTINUAR";
                 els.mainBtn.onclick = () => sendAction('SPIN_MAIN_ADVENTURE');
             }
             
@@ -151,24 +152,24 @@ function renderState(state) {
             break;
             
         case 'EVOLUTION':
-            els.title.textContent = "Evolution?";
-            els.text.textContent = state.lastEventResult || "You won the badge! Checking for evolutions...";
-            els.mainBtn.textContent = "🧬 CHECK EVOLUTION";
+            els.title.textContent = "Evolução?";
+            els.text.textContent = state.lastEventResult || "Você ganhou a insígnia! Verificando evoluções...";
+            els.mainBtn.textContent = "🧬 CHECAR EVOLUÇÃO";
             els.mainBtn.onclick = () => sendAction('EVOLVE');
             break;
 
         case 'VICTORY':
-            els.title.textContent = "🏆 CHAMPION! 🏆";
-            els.text.textContent = "You have defeated all Gym Leaders! You are the Chernomon Master!";
+            els.title.textContent = "🏆 CAMPEÃO! 🏆";
+            els.text.textContent = "Você derrotou todos os Líderes de Ginásio! Você é um Mestre Chernomon!";
             if (state.team && state.team.length > 0) showPokemon(state.team[0]); 
-            els.mainBtn.textContent = "🔄 PLAY AGAIN";
+            els.mainBtn.textContent = "🔄 JOGAR NOVAMENTE";
             els.mainBtn.onclick = () => sendAction('RESET');
             break;
 
         case 'GAME_OVER':
-            els.title.textContent = "☠️ GAME OVER";
-            els.text.textContent = state.lastEventResult || "You blacked out...";
-            els.mainBtn.textContent = "🔄 RESTART";
+            els.title.textContent = "☠️ FIM DE JOGO";
+            els.text.textContent = state.lastEventResult || "Você desmaiou...";
+            els.mainBtn.textContent = "🔄 REINICIAR";
             els.mainBtn.onclick = () => sendAction('RESET');
             break;
     }
