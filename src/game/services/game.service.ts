@@ -4,16 +4,16 @@ import { pokemonService } from './pokemon.service';
 export class GameService {
   private sessions: Map<number, PlayerSession> = new Map();
 
-  // Dados dos Iniciais por Geração
-  private starters: Record<number, number[]> = {
-    1: [1, 4, 7, 25],      // Bulbasaur, Charmander, Squirtle, Pikachu
-    2: [152, 155, 158],    // Chikorita, Cyndaquil, Totodile
-    3: [252, 255, 258],    // Treecko, Torchic, Mudkip
-    4: [387, 390, 393],    // Turtwig, Chimchar, Piplup
-    5: [495, 498, 501],    // Snivy, Tepig, Oshawott
-    6: [650, 653, 656],    // Chespin, Fennekin, Froakie
-    7: [722, 725, 728],    // Rowlet, Litten, Popplio
-    8: [810, 813, 816]     // Grookey, Scorbunny, Sobble
+  // Dados dos Iniciais por Geração (ID e Nome para Fallback)
+  private starters: Record<number, {id: number, name: string}[]> = {
+    1: [{id: 1, name: 'Bulbasaur'}, {id: 4, name: 'Charmander'}, {id: 7, name: 'Squirtle'}, {id: 25, name: 'Pikachu'}],
+    2: [{id: 152, name: 'Chikorita'}, {id: 155, name: 'Cyndaquil'}, {id: 158, name: 'Totodile'}],
+    3: [{id: 252, name: 'Treecko'}, {id: 255, name: 'Torchic'}, {id: 258, name: 'Mudkip'}],
+    4: [{id: 387, name: 'Turtwig'}, {id: 390, name: 'Chimchar'}, {id: 393, name: 'Piplup'}],
+    5: [{id: 495, name: 'Snivy'}, {id: 498, name: 'Tepig'}, {id: 501, name: 'Oshawott'}],
+    6: [{id: 650, name: 'Chespin'}, {id: 653, name: 'Fennekin'}, {id: 656, name: 'Froakie'}],
+    7: [{id: 722, name: 'Rowlet'}, {id: 725, name: 'Litten'}, {id: 728, name: 'Popplio'}],
+    8: [{id: 810, name: 'Grookey'}, {id: 813, name: 'Scorbunny'}, {id: 816, name: 'Sobble'}]
   };
 
   // Pesos para eventos (Aventura)
@@ -88,10 +88,22 @@ export class GameService {
 
   // NOVA FUNÇÃO: Sorteia um inicial válido da geração atual
   async spinStarter(generation: number) {
-      const validIds = this.starters[generation] || this.starters[1];
-      const pickId = validIds[Math.floor(Math.random() * validIds.length)];
+      const validStarters = this.starters[generation] || this.starters[1];
+      const pick = validStarters[Math.floor(Math.random() * validStarters.length)];
       const isShiny = Math.random() < 0.02; // 2% chance
-      return await pokemonService.getPokemon(pickId, isShiny);
+      
+      const mon = await pokemonService.getPokemon(pick.id, isShiny);
+      
+      if (mon) return mon;
+
+      // Fallback se a API falhar
+      return {
+          id: pick.id,
+          name: pick.name,
+          power: 1, // Power básico
+          shiny: isShiny,
+          baseStatsTotal: 300 // Média baixa
+      };
   }
 
   spinStartAdventure(): AdventureEvent {
