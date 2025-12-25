@@ -28,10 +28,11 @@ const HEADERS = {
   'viewport-width': '1280',
 };
 
-interface InstagramMedia {
-  video_url?: string;
-  display_url?: string;
-  __typename: string;
+interface MediaInfo {
+  video_url: string;
+  caption?: string;
+  author?: string;
+  __typename?: string;
 }
 
 const TARGET_GROUP_ID = -1000000000000;
@@ -72,9 +73,13 @@ bot.on('message', async (ctx) => {
         });
         
         const videoBuffer = Buffer.from(videoResponse.data);
+        
+        let captionText = `🎥 Vídeo do Instagram`;
+        if (media.author) captionText += ` de @${media.author}`;
+        if (media.caption) captionText += `\n\n${media.caption}`;
 
         await ctx.replyWithVideo(new InputFile(videoBuffer, `insta_${postId}.mp4`), {
-          caption: `🎥 Vídeo do Instagram\nID: ${postId}`
+          caption: captionText
         });
 
         await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
@@ -99,20 +104,24 @@ bot.on('message', async (ctx) => {
     });
 
     try {
-      const videoUrl = await getXMedia(username, tweetId);
+      const media = await getXMedia(username, tweetId);
 
-      if (videoUrl) {
+      if (media && media.video_url) {
         await ctx.replyWithChatAction('upload_video');
 
-        const videoResponse = await axios.get(videoUrl, { 
+        const videoResponse = await axios.get(media.video_url, { 
           responseType: 'arraybuffer',
           headers: HEADERS 
         });
         
         const videoBuffer = Buffer.from(videoResponse.data);
 
+        let captionText = `🎥 Vídeo do X (Twitter)`;
+        if (media.author) captionText += ` de @${media.author}`;
+        if (media.caption) captionText += `\n\n${media.caption}`;
+
         await ctx.replyWithVideo(new InputFile(videoBuffer, `x_${tweetId}.mp4`), {
-          caption: `🎥 Vídeo do X (Twitter)\nID: ${tweetId}`
+          caption: captionText
         });
 
         await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
@@ -127,7 +136,7 @@ bot.on('message', async (ctx) => {
   }
 });
 
-async function getXMedia(username: string, tweetId: string): Promise<string | null> {
+async function getXMedia(username: string, tweetId: string): Promise<MediaInfo | null> {
   // Using api.fxtwitter.com to extract video URL without heavy scraping
   const apiUrl = `https://api.fxtwitter.com/${username}/status/${tweetId}`;
 
@@ -136,12 +145,13 @@ async function getXMedia(username: string, tweetId: string): Promise<string | nu
     const data = response.data;
 
     if (data && data.tweet && data.tweet.media && data.tweet.media.videos) {
-      // Find the video with the highest bitrate or simply the first one
       const videos = data.tweet.media.videos;
       if (videos.length > 0) {
-        // Sort by bitrate desc to get best quality? The API usually sorts them well.
-        // Let's just pick the first one which is usually the main video URL provided by fxtwitter
-        return videos[0].url;
+        return {
+            video_url: videos[0].url,
+            caption: data.tweet.text,
+            author: data.tweet.author ? data.tweet.author.screen_name : username
+        };
       }
     }
     return null;
@@ -151,7 +161,7 @@ async function getXMedia(username: string, tweetId: string): Promise<string | nu
   }
 }
 
-async function getInstagramMedia(postId: string): Promise<InstagramMedia | null> {
+async function getInstagramMedia(postId: string): Promise<MediaInfo | null> {
   const embedUrl = `https://www.instagram.com/p/${postId}/embed/captioned/`;
 
   try {
@@ -176,13 +186,12 @@ async function getInstagramMedia(postId: string): Promise<InstagramMedia | null>
       );
       
       // Remove ALL remaining backslashes to fix double-escaped paths
-      // e.g. https:\/\/ -> https:// and \/o1\/ -> /o1/
       videoUrl = videoUrl.replace(/\\/g, '');
 
       return {
         video_url: videoUrl,
         __typename: 'GraphVideo'
-      } as InstagramMedia;
+      } as MediaInfo;
     }
 
     // DEBUG: Save HTML if failed
@@ -195,39 +204,55 @@ async function getInstagramMedia(postId: string): Promise<InstagramMedia | null>
         const mainResponse = await axios.get(mainUrl, { headers: HEADERS });
         const mainHtml = mainResponse.data as string;
         
+        let videoUrl = null;
+        let caption = undefined;
+        let author = undefined;
+
         // 3.1 Check for video_versions (ServerJS / JSON payload)
-        // Matches: "video_versions":[{"width":...,"height":...,"url":"..."
         const mainVideoVersionsMatch = mainHtml.match(/"video_versions"\s*:\s*\[\s*\{.*?"url"\s*:\s*"([^"]+)"/);
         if (mainVideoVersionsMatch && mainVideoVersionsMatch[1]) {
-             let videoUrl = mainVideoVersionsMatch[1];
-             if (videoUrl.endsWith('\\')) videoUrl = videoUrl.slice(0, -1);
-             videoUrl = videoUrl.replace(/\\u([0-9a-fA-F]{4})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16)));
-             videoUrl = videoUrl.replace(/\\/g, '');
-             
-             return { video_url: videoUrl, __typename: 'GraphVideo' } as InstagramMedia;
+             videoUrl = mainVideoVersionsMatch[1];
         }
 
         // 3.2 Check for og:video meta tag
-        // <meta property="og:video" content="https://..." />
-        const ogVideoMatch = mainHtml.match(/<meta\s+property="og:video"\s+content="([^"]+)"/);
-        if (ogVideoMatch && ogVideoMatch[1]) {
-             let videoUrl = ogVideoMatch[1].replace(/&amp;/g, '&');
-             return {
-                video_url: videoUrl,
-                __typename: 'GraphVideo'
-             } as InstagramMedia;
+        if (!videoUrl) {
+            const ogVideoMatch = mainHtml.match(/<meta\s+property="og:video"\s+content="([^"]+)"/);
+            if (ogVideoMatch && ogVideoMatch[1]) {
+                videoUrl = ogVideoMatch[1].replace(/&amp;/g, '&');
+            }
         }
         
         // 3.3 Also try the robust regex on the main HTML as a last resort
-        const mainVideoUrlMatch = mainHtml.match(/video_url\\?"\s*:\s*\\?"([^"]+)/);
-        if (mainVideoUrlMatch && mainVideoUrlMatch[1]) {
-             // ... (Same cleaning logic as above) ...
-             let videoUrl = mainVideoUrlMatch[1];
+        if (!videoUrl) {
+            const mainVideoUrlMatch = mainHtml.match(/video_url\\?"\s*:\s*\\?"([^"]+)/);
+            if (mainVideoUrlMatch && mainVideoUrlMatch[1]) {
+                videoUrl = mainVideoUrlMatch[1];
+            }
+        }
+
+        if (videoUrl) {
+             // Clean URL
              if (videoUrl.endsWith('\\')) videoUrl = videoUrl.slice(0, -1);
              videoUrl = videoUrl.replace(/\\u([0-9a-fA-F]{4})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16)));
              videoUrl = videoUrl.replace(/\\/g, '');
-             
-             return { video_url: videoUrl, __typename: 'GraphVideo' } as InstagramMedia;
+
+             // Try to extract metadata from Main Page JSON
+             // Owner: "owner":{"id":"...","username":"leonardinlopes"
+             const ownerMatch = mainHtml.match(/"owner":\{[^}]*?"username":"([^"]+)"/);
+             if (ownerMatch && ownerMatch[1]) {
+                 author = ownerMatch[1];
+             }
+
+             // Caption: "caption":{"pk":"...","text":"The text..."}
+             // Be careful with JSON structure matching
+             const captionMatch = mainHtml.match(/"caption":\{[^}]*?"text":"([^"]+)"/);
+             if (captionMatch && captionMatch[1]) {
+                 // Clean unicode in caption
+                 caption = captionMatch[1].replace(/\\u([0-9a-fA-F]{4})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16)));
+                 caption = caption.replace(/\\n/g, '\n');
+             }
+
+             return { video_url: videoUrl, caption, author, __typename: 'GraphVideo' } as MediaInfo;
         }
         
         // Save main HTML for debug if that also fails
@@ -242,11 +267,3 @@ async function getInstagramMedia(postId: string): Promise<InstagramMedia | null>
 
     return null;
   } catch (error) {
-    console.error('Error fetching Instagram media:', error);
-    return null;
-  }
-}
-
-// Start the bot
-bot.start();
-console.log('Bot is running...');
