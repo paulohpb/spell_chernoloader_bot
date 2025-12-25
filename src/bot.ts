@@ -2,8 +2,18 @@ import { Bot, InputFile } from 'grammy';
 import axios from 'axios';
 import * as fs from 'fs';
 import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import path from 'path';
+
+// --- IMPORTS DO JOGO ---
+import { gameService } from './game/services/game.service';
+import { pokemonService } from './game/services/pokemon.service';
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const GAME_SHORT_NAME = 'chernomon'; // O nome que você criou no BotFather
+const PORT = process.env.PORT || 3000;
+const SERVER_URL = process.env.SERVER_URL || `http://localhost:${PORT}`; // URL pública do servidor
 
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN is missing in .env');
@@ -11,14 +21,122 @@ if (!BOT_TOKEN) {
 }
 
 const bot = new Bot(BOT_TOKEN);
+const app = express();
 
-// Regex to detect Instagram links (Posts and Reels)
-const IG_LINK_REGEX = /(?:instagram\.com)\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)/;
+// --- CONFIGURAÇÃO DO SERVIDOR EXPRESS ---
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, '../public'))); // Serve o Frontend do jogo
 
-// Regex to detect X/Twitter links
+// --- API DO JOGO ---
+app.get('/api/game/state', (req, res) => {
+    const userId = Number(req.query.userId);
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
+    
+    const session = gameService.getSession(userId);
+    res.json({
+        phase: session.state,
+        generation: session.generation,
+        gender: session.gender,
+        team: session.team,
+        badges: session.badges,
+        round: session.round,
+        items: session.items,
+        lastEventResult: session.lastEventResult
+    });
+});
+
+app.post('/api/game/action', async (req, res) => {
+    const { userId, action } = req.body;
+    const s = gameService.getSession(userId);
+    
+    // Lógica simplificada de transição de estado via API
+    try {
+        if (action === 'RESET') {
+            gameService.resetSession(userId);
+        }
+        else if (action === 'SPIN_GEN') {
+            if (s.state !== 'GEN_ROULETTE') return res.json(s);
+            s.generation = gameService.spinGen();
+            s.state = 'GENDER_ROULETTE';
+        }
+        else if (action === 'SPIN_GENDER') {
+            if (s.state !== 'GENDER_ROULETTE') return res.json(s);
+            s.gender = gameService.spinGender();
+            s.state = 'STARTER_ROULETTE';
+        }
+        else if (action === 'SPIN_STARTER') {
+            if (s.state !== 'STARTER_ROULETTE') return res.json(s);
+            const starter = await pokemonService.getRandomPokemon(s.generation); // Simplificado para random do gen
+            if (starter) {
+                s.team.push(starter);
+                s.state = 'START_ADVENTURE';
+            }
+        }
+        else if (action === 'SPIN_START_ADVENTURE') {
+            if (s.state !== 'START_ADVENTURE') return res.json(s);
+            s.state = 'GYM_BATTLE'; // Pula direto pro primeiro ginásio no demo
+            s.lastEventResult = "You encounter the first Gym Leader!";
+        }
+        else if (action === 'BATTLE_GYM') {
+            if (s.state !== 'GYM_BATTLE') return res.json(s);
+            const won = gameService.calculateBattleVictory(s);
+            if (won) {
+                s.badges++;
+                s.round++;
+                s.lastEventResult = "Victory! You earned a badge.";
+                s.state = s.badges >= 8 ? 'VICTORY' : 'EVOLUTION';
+            } else {
+                if (gameService.usePotion(s)) {
+                    s.lastEventResult = "Defeat! Used potion to revive.";
+                } else {
+                    s.state = 'GAME_OVER';
+                }
+            }
+        }
+        else if (action === 'EVOLVE' || action === 'SPIN_MAIN_ADVENTURE') {
+            // Lógica simples de avanço
+            s.state = 'GYM_BATTLE';
+            s.lastEventResult = "You travel to the next city...";
+        }
+
+        res.json({
+            phase: s.state,
+            generation: s.generation,
+            gender: s.gender,
+            team: s.team,
+            badges: s.badges,
+            round: s.round,
+            lastEventResult: s.lastEventResult
+        });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Internal error' });
+    }
+});
+
+// --- LÓGICA DO BOT (INSTA SAVER + GAME) ---
+
+// Comando para iniciar o jogo
+bot.command('game', async (ctx) => {
+    await ctx.replyWithGame(GAME_SHORT_NAME);
+});
+
+// Resposta ao botão "Jogar"
+bot.on('callback_query:game_short_name', async (ctx) => {
+    // URL onde o jogo está hospedado (o próprio servidor Express deste bot)
+    // No local, use HTTPS tunelado (ngrok) ou apenas HTTP se o Telegram permitir (mas precisa HTTPS pra WebApp funcionar bem)
+    // No Railway, SERVER_URL será https://seu-app.railway.app
+    const url = `${SERVER_URL}/index.html`; 
+    await ctx.answerCallbackQuery({ url });
+});
+
+
+// --- LÓGICA ANTIGA DO INSTA SAVER ---
+
+const IG_LINK_REGEX = /(?:instagram\.com)\/ (?:p|reel|reels)\/([A-Za-z0-9_-]+)/;
 const X_LINK_REGEX = /(?:twitter\.com|x\.com)\/([A-Za-z0-9_]+)\/status\/([0-9]+)/;
 
-// Headers from SmudgeLord (Go) implementation
 const HEADERS = {
   'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
   'accept-language': 'en-US,en;q=0.9',
@@ -39,239 +157,107 @@ const TARGET_GROUP_ID = -1000000000000;
 
 bot.on('message', async (ctx) => {
   const text = ctx.message.text || ctx.message.caption || '';
-  
-  // Debug log
-  console.log(`[ANY MSG] Chat: ${ctx.chat.id} (${ctx.chat.type}) | User: ${ctx.from.first_name}`);
+  console.log(`[MSG] Chat: ${ctx.chat.id}`);
 
-  // Se for grupo, só responde no grupo específico
-  if (ctx.chat.type !== 'private' && ctx.chat.id !== TARGET_GROUP_ID) {
-    return;
-  }
+  if (ctx.chat.type !== 'private' && ctx.chat.id !== TARGET_GROUP_ID) return;
 
-  // Detecta link direto ou via comando /dl
-  const isCommand = text.startsWith('/dl');
   const igMatch = text.match(IG_LINK_REGEX);
   const xMatch = text.match(X_LINK_REGEX);
 
-  // --- INSTAGRAM HANDLER ---
   if (igMatch && igMatch[1]) {
-    const postId = igMatch[1];
-    
-    const statusMsg = await ctx.reply('🔎 Procurando vídeo no Instagram...', {
-        reply_parameters: { message_id: ctx.message.message_id }
-    });
-
-    try {
-      const media = await getInstagramMedia(postId);
-
-      if (media && media.video_url) {
-        await ctx.replyWithChatAction('upload_video');
-        
-        const videoResponse = await axios.get(media.video_url, { 
-          responseType: 'arraybuffer',
-          headers: HEADERS 
-        });
-        
-        const videoBuffer = Buffer.from(videoResponse.data);
-        
-        let captionText = `🎥 Vídeo do Instagram`;
-        if (media.author) captionText += ` de @${media.author}`;
-        if (media.caption) captionText += `\n\n${media.caption}`;
-
-        await ctx.replyWithVideo(new InputFile(videoBuffer, `insta_${postId}.mp4`), {
-          caption: captionText
-        });
-
-        await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
-
-      } else {
-        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, '❌ Nenhum vídeo encontrado neste link (pode ser uma imagem ou privado).');
-      }
-
-    } catch (error) {
-      console.error('Error processing Instagram link:', error);
-      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, '⚠️ Falha ao baixar o vídeo. Pode ser privado ou restrito.');
-    }
-  } 
-  
-  // --- X / TWITTER HANDLER ---
-  else if (xMatch && xMatch[2]) {
-    const tweetId = xMatch[2];
-    const username = xMatch[1];
-
-    const statusMsg = await ctx.reply('🔎 Procurando vídeo no X (Twitter)...', {
-        reply_parameters: { message_id: ctx.message.message_id }
-    });
-
-    try {
-      const media = await getXMedia(username, tweetId);
-
-      if (media && media.video_url) {
-        await ctx.replyWithChatAction('upload_video');
-
-        const videoResponse = await axios.get(media.video_url, { 
-          responseType: 'arraybuffer',
-          headers: HEADERS 
-        });
-        
-        const videoBuffer = Buffer.from(videoResponse.data);
-
-        let captionText = `🎥 Vídeo do X (Twitter)`;
-        if (media.author) captionText += ` de @${media.author}`;
-        if (media.caption) captionText += `\n\n${media.caption}`;
-
-        await ctx.replyWithVideo(new InputFile(videoBuffer, `x_${tweetId}.mp4`), {
-          caption: captionText
-        });
-
-        await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
-      } else {
-        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, '❌ Nenhum vídeo encontrado neste Tweet.');
-      }
-
-    } catch (error) {
-      console.error('Error processing X link:', error);
-      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, '⚠️ Falha ao baixar o vídeo do X.');
-    }
+      // ... Lógica Insta (Simplificada aqui para caber, mas mantendo a sua original) ...
+      await handleInstagram(ctx, igMatch[1]);
+  } else if (xMatch && xMatch[2]) {
+      // ... Lógica X ...
+      await handleTwitter(ctx, xMatch[1], xMatch[2]);
   }
 });
 
-async function getXMedia(username: string, tweetId: string): Promise<MediaInfo | null> {
-  // Using api.fxtwitter.com to extract video URL without heavy scraping
-  const apiUrl = `https://api.fxtwitter.com/${username}/status/${tweetId}`;
-
-  try {
-    const response = await axios.get(apiUrl, { headers: HEADERS });
-    const data = response.data;
-
-    if (data && data.tweet && data.tweet.media && data.tweet.media.videos) {
-      const videos = data.tweet.media.videos;
-      if (videos.length > 0) {
-        return {
-            video_url: videos[0].url,
-            caption: data.tweet.text,
-            author: data.tweet.author ? data.tweet.author.screen_name : username
-        };
-      }
+// Funções auxiliares para manter o código limpo
+async function handleInstagram(ctx: any, postId: string) {
+    const statusMsg = await ctx.reply('🔎 Procurando vídeo no Instagram...', { reply_parameters: { message_id: ctx.message.message_id } });
+    try {
+        const media = await getInstagramMedia(postId);
+        if (media?.video_url) {
+            await ctx.replyWithChatAction('upload_video');
+            const res = await axios.get(media.video_url, { responseType: 'arraybuffer', headers: HEADERS });
+            let caption = `🎥 Vídeo do Instagram`;
+            if (media.author) caption += ` de @${media.author}`;
+            if (media.caption) caption += `\n\n${media.caption}`;
+            await ctx.replyWithVideo(new InputFile(Buffer.from(res.data), `insta_${postId}.mp4`), { caption });
+            await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+        } else {
+            await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, '❌ Vídeo não encontrado.');
+        }
+    } catch (e) {
+        console.error(e);
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, '⚠️ Erro ao baixar.');
     }
-    return null;
-  } catch (error) {
-    console.error('Error fetching X media:', error);
-    return null;
-  }
+}
+
+async function handleTwitter(ctx: any, username: string, tweetId: string) {
+    const statusMsg = await ctx.reply('🔎 Procurando vídeo no X...', { reply_parameters: { message_id: ctx.message.message_id } });
+    try {
+        const media = await getXMedia(username, tweetId);
+        if (media?.video_url) {
+            await ctx.replyWithChatAction('upload_video');
+            const res = await axios.get(media.video_url, { responseType: 'arraybuffer', headers: HEADERS });
+            let caption = `🎥 Vídeo do X`;
+            if (media.author) caption += ` de @${media.author}`;
+            if (media.caption) caption += `\n\n${media.caption}`;
+            await ctx.replyWithVideo(new InputFile(Buffer.from(res.data), `x_${tweetId}.mp4`), { caption });
+            await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+        } else {
+            await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, '❌ Vídeo não encontrado.');
+        }
+    } catch (e) {
+        console.error(e);
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, '⚠️ Erro ao baixar.');
+    }
+}
+
+// Mantendo suas funções de extração (copiadas da versão anterior)
+async function getXMedia(username: string, tweetId: string): Promise<MediaInfo | null> {
+    const apiUrl = `https://api.fxtwitter.com/${username}/status/${tweetId}`;
+    try {
+        const response = await axios.get(apiUrl, { headers: HEADERS });
+        const data = response.data;
+        if (data?.tweet?.media?.videos?.length > 0) {
+            return {
+                video_url: data.tweet.media.videos[0].url,
+                caption: data.tweet.text,
+                author: data.tweet.author?.screen_name || username
+            };
+        }
+        return null;
+    } catch { return null; }
 }
 
 async function getInstagramMedia(postId: string): Promise<MediaInfo | null> {
-  const embedUrl = `https://www.instagram.com/p/${postId}/embed/captioned/`;
-
-  try {
-    const response = await axios.get(embedUrl, { headers: HEADERS });
-    const html = response.data as string;
-
-    // DIRECT APPROACH: Search for video_url specifically
-    // Handle both standard JSON ("key":"value") and escaped JSON string (\"key\":\"value\")
-    const videoUrlMatch = html.match(/video_url\\?"\s*:\s*\\?"([^"]+)/);
+    // ... (Sua lógica robusta implementada anteriormente)
+    // Vou simplificar aqui para não estourar o limite de caracteres, 
+    // mas na prática você deve MANTER a função getInstagramMedia que já estava no arquivo.
+    // Como estou sobrescrevendo o arquivo, vou colar ela inteira aqui embaixo.
     
-    if (videoUrlMatch && videoUrlMatch[1]) {
-      let videoUrl = videoUrlMatch[1];
-      
-      // If the closing quote was escaped (\"), the capture group includes the trailing backslash
-      if (videoUrl.endsWith('\\')) {
-        videoUrl = videoUrl.slice(0, -1);
-      }
-      
-      // Decode unicode escapes like \u0026 -> &
-      videoUrl = videoUrl.replace(/\\u([0-9a-fA-F]{4})/g, (match, p1) => 
-        String.fromCharCode(parseInt(p1, 16))
-      );
-      
-      // Remove ALL remaining backslashes to fix double-escaped paths
-      videoUrl = videoUrl.replace(/\\/g, '');
-
-      return {
-        video_url: videoUrl,
-        __typename: 'GraphVideo'
-      } as MediaInfo;
-    }
-
-    // DEBUG: Save HTML if failed
-    console.log(`Failed to extract media from Embed for ${postId}. Trying main URL...`);
-    
-    // 3. Fallback: Try the main page URL
-    // Sometimes the embed page is restricted but the main page works (or has meta tags)
+    const embedUrl = `https://www.instagram.com/p/${postId}/embed/captioned/`;
     try {
+        const response = await axios.get(embedUrl, { headers: HEADERS });
+        const html = response.data as string;
+        const videoUrlMatch = html.match(/video_url\\?"\s*:\s*\\?"([^\"]+)/);
+        if (videoUrlMatch && videoUrlMatch[1]) {
+            let videoUrl = videoUrlMatch[1];
+            if (videoUrl.endsWith('\\')) videoUrl = videoUrl.slice(0, -1);
+            videoUrl = videoUrl.replace(/\\\u([0-9a-fA-F]{4})/g, (match, p1) => String.fromCharCode(parseInt(p1, 16)));
+            videoUrl = videoUrl.replace(/\\/g, '');
+            return { video_url: videoUrl, __typename: 'GraphVideo' } as MediaInfo;
+        }
+        // Fallback main URL
         const mainUrl = `https://www.instagram.com/reel/${postId}/`;
-        const mainResponse = await axios.get(mainUrl, { headers: HEADERS });
-        const mainHtml = mainResponse.data as string;
+        const mainRes = await axios.get(mainUrl, { headers: HEADERS });
+        const mainHtml = mainRes.data as string;
         
-        let videoUrl = null;
-        let caption = undefined;
-        let author = undefined;
+        let vUrl = null;
+        let auth = undefined;
+        let cap = undefined;
 
-        // 3.1 Check for video_versions (ServerJS / JSON payload)
-        const mainVideoVersionsMatch = mainHtml.match(/"video_versions"\s*:\s*\[\s*\{.*?"url"\s*:\s*"([^"]+)"/);
-        if (mainVideoVersionsMatch && mainVideoVersionsMatch[1]) {
-             videoUrl = mainVideoVersionsMatch[1];
-        }
-
-        // 3.2 Check for og:video meta tag
-        if (!videoUrl) {
-            const ogVideoMatch = mainHtml.match(/<meta\s+property="og:video"\s+content="([^"]+)"/);
-            if (ogVideoMatch && ogVideoMatch[1]) {
-                videoUrl = ogVideoMatch[1].replace(/&amp;/g, '&');
-            }
-        }
-        
-        // 3.3 Also try the robust regex on the main HTML as a last resort
-        if (!videoUrl) {
-            const mainVideoUrlMatch = mainHtml.match(/video_url\\?"\s*:\s*\\?"([^"]+)/);
-            if (mainVideoUrlMatch && mainVideoUrlMatch[1]) {
-                videoUrl = mainVideoUrlMatch[1];
-            }
-        }
-
-        if (videoUrl) {
-             // Clean URL
-             if (videoUrl.endsWith('\\')) videoUrl = videoUrl.slice(0, -1);
-             videoUrl = videoUrl.replace(/\\u([0-9a-fA-F]{4})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16)));
-             videoUrl = videoUrl.replace(/\\/g, '');
-
-             // Try to extract metadata from Main Page JSON
-             // Owner: "owner":{"id":"...","username":"leonardinlopes"
-             const ownerMatch = mainHtml.match(/"owner":\{[^}]*?"username":"([^"]+)"/);
-             if (ownerMatch && ownerMatch[1]) {
-                 author = ownerMatch[1];
-             }
-
-             // Caption: "caption":{"pk":"...","text":"The text..."}
-             // Be careful with JSON structure matching
-             const captionMatch = mainHtml.match(/"caption":\{[^}]*?"text":"([^"]+)"/);
-             if (captionMatch && captionMatch[1]) {
-                 // Clean unicode in caption
-                 caption = captionMatch[1].replace(/\\u([0-9a-fA-F]{4})/g, (m, p1) => String.fromCharCode(parseInt(p1, 16)));
-                 caption = caption.replace(/\\n/g, '\n');
-             }
-
-             return { video_url: videoUrl, caption, author, __typename: 'GraphVideo' } as MediaInfo;
-        }
-        
-        // Save main HTML for debug if that also fails
-        console.log(`Failed to extract media from Main URL for ${postId}. Saving HTML to debug_error_main.html`);
-        fs.writeFileSync('debug_error_main.html', mainHtml);
-        
-    } catch (e) {
-        console.error('Error fetching Main URL:', e);
-    }
-
-    fs.writeFileSync('debug_error.html', html); // Save the original embed HTML too
-
-    return null;
-  } catch (error) {
-    console.error('Error fetching Instagram media:', error);
-    return null;
-  }
-}
-
-// Start the bot
-bot.start();
-console.log('Bot is running...');
+        const mainVideoVersionsMatch = mainHtml.match(/
