@@ -119,7 +119,12 @@ app.post('/api/game/action', async (req, res) => {
 
 // Comando para iniciar o jogo
 bot.command('game', async (ctx) => {
-    await ctx.replyWithGame(GAME_SHORT_NAME);
+    try {
+        await ctx.replyWithGame(GAME_SHORT_NAME);
+    } catch (e) {
+        console.error('Error sending game:', e);
+        await ctx.reply('⚠️ Erro: O jogo não foi encontrado. Crie um jogo com short name "chernomon" no @BotFather.');
+    }
 });
 
 // Resposta ao botão "Jogar"
@@ -134,7 +139,7 @@ bot.on('callback_query:game_short_name', async (ctx) => {
 
 // --- LÓGICA ANTIGA DO INSTA SAVER ---
 
-const IG_LINK_REGEX = /(?:instagram\.com)\/ (?:p|reel|reels)\/([A-Za-z0-9_-]+)/;
+const IG_LINK_REGEX = /(?:instagram\.com)\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)/;
 const X_LINK_REGEX = /(?:twitter\.com|x\.com)\/([A-Za-z0-9_]+)\/status\/([0-9]+)/;
 
 const HEADERS = {
