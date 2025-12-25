@@ -141,6 +141,7 @@ function renderState(state) {
                 showPokemon(starter);
                 els.title.textContent = `Você obteve ${starter.name}!`;
                 els.text.textContent = "Sua jornada começa. O que fará primeiro?";
+                els.mainBtn.style.display = 'block';
                 els.mainBtn.textContent = "🎲 GIRAR EVENTO";
                 els.mainBtn.onclick = () => sendAction('SPIN_START_ADVENTURE');
             } else {
@@ -151,6 +152,7 @@ function renderState(state) {
 
         case 'ADVENTURE':
         case 'GYM_BATTLE':
+            els.mainBtn.style.display = 'block';
             if (state.lastEventResult) {
                 els.text.textContent = state.lastEventResult;
             } else {
@@ -172,6 +174,7 @@ function renderState(state) {
             break;
             
         case 'EVOLUTION':
+            els.mainBtn.style.display = 'block';
             els.title.textContent = "Evolução?";
             els.text.textContent = state.lastEventResult || "Você ganhou a insígnia! Verificando evoluções...";
             els.mainBtn.textContent = "🧬 CHECAR EVOLUÇÃO";
@@ -179,6 +182,7 @@ function renderState(state) {
             break;
 
         case 'VICTORY':
+            els.mainBtn.style.display = 'block';
             els.title.textContent = "🏆 CAMPEÃO! 🏆";
             els.text.textContent = "Você derrotou todos os Líderes de Ginásio! Você é um Mestre Chernomon!";
             if (state.team && state.team.length > 0) showPokemon(state.team[0]); 
@@ -187,6 +191,7 @@ function renderState(state) {
             break;
 
         case 'GAME_OVER':
+            els.mainBtn.style.display = 'block';
             els.title.textContent = "☠️ FIM DE JOGO";
             els.text.textContent = state.lastEventResult || "Você desmaiou...";
             els.mainBtn.textContent = "🔄 REINICIAR";
