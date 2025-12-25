@@ -35,7 +35,8 @@ export interface PlayerSession {
   items: Item[];
   badges: number;
   gymRetriesLeft: number;
-  lastEventResult?: string; // To store text between state transitions
+  lastEventResult?: string; // Texto do resultado
+  lastEvent?: AdventureEvent; // O tipo de evento (ex: CATCH_POKEMON) para a animação
 }
 
 export type AdventureEvent = 
