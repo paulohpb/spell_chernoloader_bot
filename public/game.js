@@ -231,7 +231,11 @@ async function sendAction(action, payload = {}) {
     } catch (e) {
         console.error(e);
         isAnimating = false;
-        els.text.textContent = "Erro. Tente novamente.";
+        els.text.textContent = "Erro de conexão. Tente de novo.";
+        
+        // CORREÇÃO CRÍTICA: Se der erro, mostra o botão de novo para o usuário tentar clicar
+        els.mainBtn.style.display = 'block'; 
+        els.mainBtn.disabled = false;
     } finally {
         if (!isAnimating) els.mainBtn.disabled = false;
     }
@@ -287,7 +291,8 @@ function renderState(state) {
 
     // Reset UI
     els.sprite.style.display = 'none';
-    // els.wheel.style.display = 'none'; // Removed as we use canvas now
+    // CORREÇÃO: Garante que a roleta suma quando renderizar um novo estado
+    document.getElementById('roulette-canvas').style.display = 'none'; 
     els.secControls.style.display = 'none';
     els.mainBtn.style.display = 'none'; // Esconde botão principal por padrão em fases de escolha
     els.secControls.innerHTML = ''; // Limpa botões secundários
