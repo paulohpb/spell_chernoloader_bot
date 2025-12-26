@@ -6,8 +6,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-// Salva na mesma pasta 'data' que usamos para o jogo (ou cria uma nova na raiz se nÃ£o existir)
-// Ajustado para navegar corretamente a partir de src/services/
 const DATA_DIR = path.join(__dirname, '../../data');
 const FILE_PATH = path.join(DATA_DIR, 'todo_list.txt');
 
@@ -27,22 +25,14 @@ export class TodoService {
 
     async addTodo(text: string, user: string): Promise<void> {
         try {
-            await this.init(); // Garante que a pasta existe antes de salvar
-
-            // Formata a data para o padrão brasileiro
+            await this.init();
             const date = new Date().toLocaleString('pt-BR', { 
                 timeZone: 'America/Sao_Paulo',
                 day: '2-digit', month: '2-digit', year: 'numeric',
                 hour: '2-digit', minute: '2-digit'
             });
-
-            // Formato: [Data Hora] Usuário: Tarefa
             const line = `[${date}] ${user}: ${text}\n`;
-
-            // 'a' flag significa 'append' (adicionar ao final sem apagar o resto)
             await fs.appendFile(FILE_PATH, line, { encoding: 'utf-8', flag: 'a' });
-            
-            console.log(`[TodoService] Nova tarefa adicionada por ${user}`);
         } catch (error) {
             console.error('[TodoService] Erro ao salvar tarefa:', error);
             throw error;
