@@ -13,6 +13,7 @@ import path from 'path';
 
 // --- IMPORTS DO JOGO ---
 import { gameService } from './game/services/game.service';
+import { todoService } from './services/todo.service';
 // import { pokemonService } from './game/services/pokemon.service'; // Não usado diretamente aqui por enquanto
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -168,6 +169,39 @@ const HEADERS = {
 };
 
 const TARGET_GROUP_ID = -1001110648969;
+
+// --- LÓGICA DE MENSAGENS DO BOT ---
+
+bot.hears(/#TODO/i, async (ctx) => {
+    const text = ctx.message.text;
+    const user = ctx.from?.first_name || 'Desconhecido';
+
+    // Remove o "#TODO" do começo para pegar só a tarefa
+    const task = text.replace(/#TODO/i, '').trim();
+
+    if (!task) {
+        return ctx.reply('⚠️ Você precisa escrever a tarefa. Exemplo: #TODO Arrumar o bug do menu');
+    }
+
+    try {
+        await todoService.addTodo(task, user);
+        await ctx.reply(`✅ Tarefa anotada no caderno!\n\n📝 *${task}*`, { parse_mode: 'Markdown' });
+    } catch (e) {
+        await ctx.reply('❌ Erro ao salvar a tarefa.');
+    }
+});
+
+bot.command('ler_todos', async (ctx) => {
+    try {
+        const todos = await todoService.getTodos();
+        // O Telegram tem limite de 4096 caracteres, então cortamos se for gigante
+        const message = todos.length > 4000 ? todos.substring(0, 4000) + '...' : todos;
+        
+        await ctx.reply(`📋 **Lista de Tarefas:**\n\n${message}`, { parse_mode: 'Markdown' });
+    } catch (e) {
+        await ctx.reply('Erro ao ler lista.');
+    }
+});
 
 interface MediaInfo {
   video_url: string;
