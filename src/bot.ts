@@ -173,7 +173,7 @@ const TARGET_GROUP_ID = -1000000000000;
 // --- LÓGICA DE MENSAGENS DO BOT ---
 
 bot.hears(/#TODO/i, async (ctx) => {
-    const text = ctx.message.text;
+    const text = ctx.message?.text || '';
     const user = ctx.from?.first_name || 'Desconhecido';
 
     // Remove o "#TODO" do começo para pegar só a tarefa
