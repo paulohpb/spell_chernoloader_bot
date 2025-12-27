@@ -7,7 +7,7 @@
  * =============================================================================
  */
 
-import { Context, InputFile } from 'grammy';
+import { Context, InputFile, InlineKeyboard } from 'grammy';
 import axios, { AxiosError } from 'axios';
 import ytdl from '@distube/ytdl-core'; // YouTube Library
 import { AppError, Result } from '../../assistant/types';
@@ -70,12 +70,29 @@ const X_LINK_REGEX = /((?:https?:\/\/)?(?:twitter\.com|x\.com)\/([A-Za-z0-9_]+)\
 const YT_LINK_REGEX = /((?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11}))/;
 
 /**
+ * Helper to escape MarkdownV2 special characters
+ */
+function escapeMarkdown(text: string): string {
+  if (!text) return '';
+  // Escapes: _ * [ ] ( ) ~ ` > # + - = | { } . !
+  return text.replace(/[_*[\\\]()~`>#+\-=|"{} .!]/g, '\\$&');
+}
+
+/**
+ * Helper to truncate text for captions
+ */
+function truncateText(text: string, limit: number = 900): string {
+  if (text.length <= limit) return text;
+  return text.substring(0, limit - 3) + '...';
+}
+
+/**
  * Creates a media error
  */
 function createMediaError(code: string, message: string, details?: string): AppError {
   return {
     code,
-    category: 'LLM', // Using LLM as a general "service" category
+    category: 'LLM',
     message,
     details,
   };
@@ -143,7 +160,11 @@ async function fetchInstagramMedia(fullUrl: string): Result<MediaInfo> {
   }
 
   auditLog.trace(`Instagram video found via Cobalt for ${fullUrl}`);
-  return [null, { videoUrl, typename: 'CobaltVideo' }];
+  return [null, { 
+      videoUrl, 
+      typename: 'CobaltVideo',
+      caption: data.filename || undefined // Cobalt sometimes returns filename as a hint
+  }];
 }
 
 /**
@@ -184,7 +205,7 @@ async function fetchTwitterMedia(username: string, tweetId: string): Result<Medi
   return [null, {
     videoUrl: data.tweet.media.videos[0].url,
     caption: data.tweet.text,
-    author: data.tweet.author?.screen_name || username,
+    author: data.tweet.author?.name || data.tweet.author?.screen_name || username,
   }];
 }
 
@@ -218,7 +239,7 @@ async function downloadVideo(url: string): Result<Buffer> {
  */
 async function handleInstagram(ctx: Context, fullUrl: string, postId: string): Promise<void> {
   const statusMsg = await ctx.reply('🔎 Procurando vídeo no Instagram (via Cobalt)...', { 
-    reply_parameters: { message_id: ctx.message!.message_id } 
+    reply_parameters: { message_id: ctx.message!.message_id }
   });
 
   const [mediaError, media] = await fetchInstagramMedia(fullUrl);
@@ -239,13 +260,20 @@ async function handleInstagram(ctx: Context, fullUrl: string, postId: string): P
 
   await ctx.replyWithChatAction('upload_video');
 
-  const caption = `🎥 Vídeo do Instagram\n🔗 [Link Original](${fullUrl})`;
+  // Format caption
+  const authorLine = media.author ? `👤 *${escapeMarkdown(media.author)}*\n` : '';
+  const captionLine = media.caption ? `${escapeMarkdown(truncateText(media.caption))}` : '';
+  const finalCaption = (authorLine + captionLine).trim() || '🎥 Vídeo do Instagram';
+
+  // Create Button
+  const keyboard = new InlineKeyboard().url('Open in Instagram ↗️', fullUrl);
 
   const sendResult = await ctx.replyWithVideo(
     new InputFile(videoBuffer, `insta_${postId}.mp4`),
     {
-        caption, 
-        parse_mode: 'Markdown' 
+        caption: finalCaption, 
+        parse_mode: 'MarkdownV2',
+        reply_markup: keyboard
     }
   )
     .then((): [null, true] => [null, true])
@@ -274,7 +302,7 @@ async function handleInstagram(ctx: Context, fullUrl: string, postId: string): P
  */
 async function handleTwitter(ctx: Context, fullUrl: string, username: string, tweetId: string): Promise<void> {
   const statusMsg = await ctx.reply('🔎 Procurando vídeo no X...', { 
-    reply_parameters: { message_id: ctx.message!.message_id } 
+    reply_parameters: { message_id: ctx.message!.message_id }
   });
 
   const [mediaError, media] = await fetchTwitterMedia(username, tweetId);
@@ -295,17 +323,22 @@ async function handleTwitter(ctx: Context, fullUrl: string, username: string, tw
 
   await ctx.replyWithChatAction('upload_video');
 
-  let caption = '🎥 Vídeo do X';
-  if (media.author) caption += ` de @${media.author}`;
-  if (media.caption) caption += `\n\n${media.caption}`;
+  // Format caption
+  const authorName = media.author || username;
+  const authorLine = `👤 *${escapeMarkdown(authorName)}*\n`;
+  const captionLine = media.caption ? `${escapeMarkdown(truncateText(media.caption))}` : '';
+  const finalCaption = (authorLine + captionLine).trim();
 
-  if (caption.length > 1000) {
-    caption = caption.substring(0, 997) + '...';
-  }
+  // Create Button
+  const keyboard = new InlineKeyboard().url('Open in X ↗️', fullUrl);
 
   const sendResult = await ctx.replyWithVideo(
     new InputFile(videoBuffer, `x_${tweetId}.mp4`),
-    { caption }
+    {
+      caption: finalCaption,
+      parse_mode: 'MarkdownV2',
+      reply_markup: keyboard
+    }
   )
     .then((): [null, true] => [null, true])
     .catch((e: Error): [AppError, null] => {
@@ -333,7 +366,7 @@ async function handleTwitter(ctx: Context, fullUrl: string, username: string, tw
  */
 async function handleYoutube(ctx: Context, fullUrl: string, videoId: string): Promise<void> {
     const statusMsg = await ctx.reply('🔎 Acessando YouTube...', { 
-      reply_parameters: { message_id: ctx.message!.message_id } 
+      reply_parameters: { message_id: ctx.message!.message_id }
     });
   
     try {
@@ -363,12 +396,19 @@ async function handleYoutube(ctx: Context, fullUrl: string, videoId: string): Pr
       await ctx.replyWithChatAction('upload_video');
 
       const stream = ytdl(url, { format: format });
-      let caption = `🎥 *${info.videoDetails.title}*\n👤 ${info.videoDetails.author.name}`;
-      if (caption.length > 1000) caption = caption.substring(0, 997) + '...';
+      
+      // Format caption
+      const authorLine = `👤 *${escapeMarkdown(info.videoDetails.author.name)}*\n`;
+      const titleLine = escapeMarkdown(truncateText(info.videoDetails.title));
+      const finalCaption = authorLine + titleLine;
+
+      // Create Button
+      const keyboard = new InlineKeyboard().url('Open in YouTube ↗️', url);
 
       await ctx.replyWithVideo(new InputFile(stream), { 
-          caption,
-          parse_mode: 'Markdown'
+          caption: finalCaption,
+          parse_mode: 'MarkdownV2',
+          reply_markup: keyboard
       });
 
       await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id).catch(() => {});
