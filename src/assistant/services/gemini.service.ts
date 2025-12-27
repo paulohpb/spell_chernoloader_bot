@@ -19,6 +19,8 @@ import {
   Content,
   GenerationConfig,
   ChatSession,
+  HarmCategory,
+  HarmBlockThreshold,
 } from '@google/generative-ai';
 
 import {
@@ -35,40 +37,83 @@ import { LLM_ERROR_CODES, createLLMError, createConfigError, errorToObject } fro
 import { auditLog } from '../audit-log';
 
 /**
+ * Standard Safety Settings for the Bot
+ * Blocks content with Medium or High probability of being harmful.
+ */
+const SAFETY_SETTINGS = [
+  {
+    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+    threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+    threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+    threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+    threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+  },
+];
+
+/**
  * Converts OpenAI-style messages to Gemini format.
  * 
  * Returns:
  *   - history: Previous conversation turns for chat context
- *   - lastUserMessage: The final user prompt to send
+ *   - lastUserMessage: The final user prompt to send (text or parts)
  *   - systemInstruction: System prompt (if present)
  */
 function convertMessages(
   messages: ChatMessage[]
 ): {
   history: Content[];
-  lastUserMessage: string;
+  lastUserMessage: string | Array<string | any>; // 'any' used to avoid Part import issues, but functionally correct
   systemInstruction: string | undefined;
 } {
   const history: Content[] = [];
   let systemInstruction: string | undefined = undefined;
-  let lastUserMessage = '';
+  let lastUserMessage: string | Array<string | any> = '';
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     const role = msg.role;
     const content = msg.content;
+    
+    // Construct parts
+    const parts: any[] = [{ text: content }];
+    
+    // Add images if present
+    if (msg.images && msg.images.length > 0) {
+      for (const img of msg.images) {
+        parts.push({
+          inlineData: {
+            data: img.data.toString('base64'),
+            mimeType: img.mimeType,
+          },
+        });
+      }
+    }
 
     if (role === 'system') {
       systemInstruction = content;
     } else if (role === 'user') {
       if (i === messages.length - 1) {
         // Last message is the prompt we'll send
-        lastUserMessage = content;
+        // If we have only text, send string (simpler), otherwise send parts
+        if (parts.length === 1 && parts[0].text) {
+          lastUserMessage = parts[0].text;
+        } else {
+          lastUserMessage = parts;
+        }
       } else {
-        history.push({ role: 'user', parts: [{ text: content }] });
+        history.push({ role: 'user', parts });
       }
     } else if (role === 'assistant') {
-      history.push({ role: 'model', parts: [{ text: content }] });
+      history.push({ role: 'model', parts });
     }
   }
 
@@ -132,6 +177,7 @@ export function createGeminiService(
         const modelInstance = genAI.getGenerativeModel({
           model,
           systemInstruction,
+          safetySettings: SAFETY_SETTINGS,
         });
         return [null, modelInstance] as [null, GenerativeModel];
       })
@@ -166,6 +212,7 @@ export function createGeminiService(
         return genAI.getGenerativeModel({
           model,
           systemInstruction,
+          safetySettings: SAFETY_SETTINGS,
         });
       })
       .catch((e: Error) => {
@@ -242,6 +289,7 @@ export function createGeminiService(
         return genAI.getGenerativeModel({
           model,
           systemInstruction,
+          safetySettings: SAFETY_SETTINGS,
         });
       })
       .catch((e: Error) => {

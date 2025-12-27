@@ -9,6 +9,7 @@
 
 import { Context, InputFile } from 'grammy';
 import axios, { AxiosError } from 'axios';
+import ytdl from '@distube/ytdl-core'; // YouTube Library
 import { AppError, Result } from '../../assistant/types';
 import { auditLog } from '../../assistant/audit-log';
 import { BotConfig } from '../../config';
@@ -22,6 +23,7 @@ export const MEDIA_ERROR_CODES = {
   VIDEO_DOWNLOAD_FAILED: 'MEDIA_003',
   VIDEO_NOT_FOUND: 'MEDIA_004',
   SEND_VIDEO_FAILED: 'MEDIA_005',
+  YOUTUBE_FETCH_FAILED: 'MEDIA_006',
 } as const;
 
 /**
@@ -63,8 +65,9 @@ const SCRAPE_HEADERS = {
 /**
  * Regex patterns for social media links
  */
-const IG_LINK_REGEX = /(?:instagram\.com)\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)/;
-const X_LINK_REGEX = /(?:twitter\.com|x\.com)\/([A-Za-z0-9_]+)\/status\/([0-9]+)/;
+const IG_LINK_REGEX = /((?:https?:\/\/)?(?:www\.)?instagram\.com\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)\/?)/;
+const X_LINK_REGEX = /((?:https?:\/\/)?(?:twitter\.com|x\.com)\/([A-Za-z0-9_]+)\/status\/([0-9]+)\/?)/;
+const YT_LINK_REGEX = /((?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11}))/;
 
 /**
  * Creates a media error
@@ -79,102 +82,68 @@ function createMediaError(code: string, message: string, details?: string): AppE
 }
 
 /**
- * Fetches Instagram media information
+ * Fetches Instagram media information using Cobalt API
  */
-async function fetchInstagramMedia(postId: string): Result<MediaInfo> {
-  const embedUrl = `https://www.instagram.com/p/${postId}/embed/captioned/`;
+async function fetchInstagramMedia(fullUrl: string): Result<MediaInfo> {
+  const cobaltUrl = 'https://api.cobalt.tools/api/json';
 
-  // Try embed URL first
-  const embedResult = await axios.get(embedUrl, { headers: SCRAPE_HEADERS })
-    .then((response): [null, string] => [null, response.data as string])
-    .catch((e: AxiosError): [AppError, null] => {
-      const error = createMediaError(
-        MEDIA_ERROR_CODES.INSTAGRAM_FETCH_FAILED,
-        'Failed to fetch Instagram embed',
-        e.message
-      );
-      return [error, null];
-    });
-
-  if (embedResult[0]) {
-    auditLog.record(embedResult[0].code, { postId, error: embedResult[0].message });
-    // Don't return yet, try fallback
-  }
-
-  if (embedResult[1]) {
-    const html = embedResult[1];
-    const videoUrlMatch = html.match(/video_url\\?"\s*:\s*\\?"([^"]+)/);
-    
-    if (videoUrlMatch && videoUrlMatch[1]) {
-      let videoUrl = videoUrlMatch[1];
-      if (videoUrl.endsWith('\\')) videoUrl = videoUrl.slice(0, -1);
-      videoUrl = videoUrl.replace(/\\u([0-9a-fA-F]{4})/g, (_match, p1) => 
-        String.fromCharCode(parseInt(p1, 16))
-      );
-      videoUrl = videoUrl.replace(/\\/g, '');
-      
-      auditLog.trace(`Instagram video found via embed for post ${postId}`);
-      return [null, { videoUrl, typename: 'GraphVideo' }];
+  const result = await axios.post(
+    cobaltUrl, 
+    { url: fullUrl },
+    {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; TelegramBot/1.0)'
+      }
     }
+  )
+  .then((response): [null, any] => [null, response.data])
+  .catch((e: AxiosError): [AppError, null] => {
+    const error = createMediaError(
+      MEDIA_ERROR_CODES.INSTAGRAM_FETCH_FAILED,
+      'Failed to fetch Instagram media via Cobalt',
+      e.message
+    );
+    return [error, null];
+  });
+
+  if (result[0]) {
+    auditLog.record(result[0].code, { url: fullUrl, error: result[0].message });
+    return [result[0], null];
   }
 
-  // Fallback: try main reel URL
-  const mainUrl = `https://www.instagram.com/reel/${postId}/`;
-  
-  const mainResult = await axios.get(mainUrl, { headers: SCRAPE_HEADERS })
-    .then((response): [null, string] => [null, response.data as string])
-    .catch((e: AxiosError): [AppError, null] => {
+  const data = result[1];
+
+  if (data.status === 'error') {
       const error = createMediaError(
         MEDIA_ERROR_CODES.INSTAGRAM_FETCH_FAILED,
-        'Failed to fetch Instagram reel',
-        e.message
+        'Cobalt API returned error',
+        data.text || 'Unknown error'
       );
       return [error, null];
-    });
-
-  if (mainResult[0]) {
-    auditLog.record(mainResult[0].code, { postId, error: mainResult[0].message });
-    return [mainResult[0], null];
   }
 
-  const mainHtml = mainResult[1]!;
+  let videoUrl: string | undefined;
   
-  // Extract video URL
-  const videoVersionsMatch = mainHtml.match(/"video_versions"\s*:\s*\[\s*\{"url":"([^"]+)"/);
-  
-  if (!videoVersionsMatch) {
+  if (data.url) {
+      videoUrl = data.url;
+  } else if (data.picker && data.picker.length > 0) {
+      const item = data.picker.find((i: any) => i.type === 'video') || data.picker[0];
+      videoUrl = item.url;
+  }
+
+  if (!videoUrl) {
     const error = createMediaError(
       MEDIA_ERROR_CODES.VIDEO_NOT_FOUND,
-      'No video found in Instagram post',
-      postId
+      'No video URL found in Cobalt response',
+      fullUrl
     );
-    auditLog.record(error.code, { postId });
     return [error, null];
   }
 
-  let videoUrl = videoVersionsMatch[1];
-  if (videoUrl.endsWith('\\')) videoUrl = videoUrl.slice(0, -1);
-  videoUrl = videoUrl.replace(/\\u([0-9a-fA-F]{4})/g, (_m, p1) => 
-    String.fromCharCode(parseInt(p1, 16))
-  );
-  videoUrl = videoUrl.replace(/\\/g, '');
-
-  // Extract author
-  let author: string | undefined;
-  const ownerMatch = mainHtml.match(/"owner":\{[^}]*?"username":"([^"]+)"/);
-  if (ownerMatch) author = ownerMatch[1];
-
-  // Extract caption
-  let caption: string | undefined;
-  const captionMatch = mainHtml.match(/"caption":\{[^}]*?"text":"([^"]+)"/);
-  if (captionMatch) {
-    caption = captionMatch[1]
-      .replace(/\\u([0-9a-fA-F]{4})/g, (_m, p1) => String.fromCharCode(parseInt(p1, 16)))
-      .replace(/\\n/g, '\n');
-  }
-
-  auditLog.trace(`Instagram video found via main page for post ${postId}`);
-  return [null, { videoUrl, caption, author, typename: 'GraphVideo' }];
+  auditLog.trace(`Instagram video found via Cobalt for ${fullUrl}`);
+  return [null, { videoUrl, typename: 'CobaltVideo' }];
 }
 
 /**
@@ -247,16 +216,16 @@ async function downloadVideo(url: string): Result<Buffer> {
 /**
  * Handles Instagram link in message
  */
-async function handleInstagram(ctx: Context, postId: string): Promise<void> {
-  const statusMsg = await ctx.reply('🔎 Procurando vídeo no Instagram...', { 
+async function handleInstagram(ctx: Context, fullUrl: string, postId: string): Promise<void> {
+  const statusMsg = await ctx.reply('🔎 Procurando vídeo no Instagram (via Cobalt)...', { 
     reply_parameters: { message_id: ctx.message!.message_id } 
   });
 
-  const [mediaError, media] = await fetchInstagramMedia(postId);
+  const [mediaError, media] = await fetchInstagramMedia(fullUrl);
 
   if (mediaError || !media) {
     await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '❌ Vídeo não encontrado.')
-      .catch(() => {}); // Ignore edit errors
+      .catch(() => {});
     return;
   }
 
@@ -270,18 +239,14 @@ async function handleInstagram(ctx: Context, postId: string): Promise<void> {
 
   await ctx.replyWithChatAction('upload_video');
 
-  let caption = '🎥 Vídeo do Instagram';
-  if (media.author) caption += ` de @${media.author}`;
-  if (media.caption) caption += `\n\n${media.caption}`;
-
-  // Truncate caption if too long (Telegram limit is 1024)
-  if (caption.length > 1000) {
-    caption = caption.substring(0, 997) + '...';
-  }
+  const caption = `🎥 Vídeo do Instagram\n🔗 [Link Original](${fullUrl})`;
 
   const sendResult = await ctx.replyWithVideo(
     new InputFile(videoBuffer, `insta_${postId}.mp4`),
-    { caption }
+    {
+        caption, 
+        parse_mode: 'Markdown' 
+    }
   )
     .then((): [null, true] => [null, true])
     .catch((e: Error): [AppError, null] => {
@@ -307,7 +272,7 @@ async function handleInstagram(ctx: Context, postId: string): Promise<void> {
 /**
  * Handles Twitter/X link in message
  */
-async function handleTwitter(ctx: Context, username: string, tweetId: string): Promise<void> {
+async function handleTwitter(ctx: Context, fullUrl: string, username: string, tweetId: string): Promise<void> {
   const statusMsg = await ctx.reply('🔎 Procurando vídeo no X...', { 
     reply_parameters: { message_id: ctx.message!.message_id } 
   });
@@ -334,7 +299,6 @@ async function handleTwitter(ctx: Context, username: string, tweetId: string): P
   if (media.author) caption += ` de @${media.author}`;
   if (media.caption) caption += `\n\n${media.caption}`;
 
-  // Truncate caption if too long
   if (caption.length > 1000) {
     caption = caption.substring(0, 997) + '...';
   }
@@ -365,47 +329,86 @@ async function handleTwitter(ctx: Context, username: string, tweetId: string): P
 }
 
 /**
+ * Handles YouTube link in message
+ */
+async function handleYoutube(ctx: Context, fullUrl: string, videoId: string): Promise<void> {
+    const statusMsg = await ctx.reply('🔎 Acessando YouTube...', { 
+      reply_parameters: { message_id: ctx.message!.message_id } 
+    });
+  
+    try {
+      const url = fullUrl.startsWith('http') ? fullUrl : `https://www.youtube.com/watch?v=${videoId}`;
+      const info = await ytdl.getInfo(url);
+      const formats = ytdl.filterFormats(info.formats, 'audioandvideo');
+      
+      let format = formats.find(f => f.qualityLabel === '720p');
+      if (!format) format = formats.find(f => f.qualityLabel === '360p');
+      if (!format) {
+          formats.sort((a, b) => (b.height || 0) - (a.height || 0));
+          format = formats.find(f => (f.height || 0) <= 1080);
+      }
+      if (!format && formats.length > 0) format = formats[formats.length - 1]; 
+
+      if (!format) {
+          await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '❌ Formato compatível não encontrado.');
+          return;
+      }
+
+      if (format.contentLength && parseInt(format.contentLength) > 52428800) {
+          await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '⚠️ Vídeo muito grande (>50MB).');
+          return;
+      }
+
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, `⬇️ Baixando: ${info.videoDetails.title}...`);
+      await ctx.replyWithChatAction('upload_video');
+
+      const stream = ytdl(url, { format: format });
+      let caption = `🎥 *${info.videoDetails.title}*\n👤 ${info.videoDetails.author.name}`;
+      if (caption.length > 1000) caption = caption.substring(0, 997) + '...';
+
+      await ctx.replyWithVideo(new InputFile(stream), { 
+          caption,
+          parse_mode: 'Markdown'
+      });
+
+      await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id).catch(() => {});
+    } catch (e: any) {
+        auditLog.record(MEDIA_ERROR_CODES.YOUTUBE_FETCH_FAILED, { videoId, error: e.message });
+        await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '⚠️ Erro no YouTube.').catch(() => {});
+    }
+}
+
+/**
  * Creates the media handler.
- * 
- * Factory function pattern - returns a closure of methods.
- * 
- * @param config - Handler configuration
- * @returns MediaHandler instance
  */
 export function createMediaHandler(config: MediaHandlerConfig): MediaHandler {
   const { targetGroupId } = config;
 
-  /**
-   * Handles incoming messages, checking for social media links
-   */
   async function handleMessage(ctx: Context): Promise<void> {
-    // Only process text messages
     if (!ctx.message) return;
-    
     const text = ctx.message.text || ctx.message.caption || '';
     if (!text) return;
 
-    // Only process messages from private chats or the target group
-    if (ctx.chat?.type !== 'private' && ctx.chat?.id !== targetGroupId) {
-      return;
-    }
+    if (ctx.chat?.type !== 'private' && ctx.chat?.id !== targetGroupId) return;
 
-    // Check for Instagram links
     const igMatch = text.match(IG_LINK_REGEX);
     if (igMatch && igMatch[1]) {
-      await handleInstagram(ctx, igMatch[1]);
+      await handleInstagram(ctx, igMatch[1], igMatch[2]);
       return;
     }
 
-    // Check for Twitter/X links
     const xMatch = text.match(X_LINK_REGEX);
-    if (xMatch && xMatch[2]) {
-      await handleTwitter(ctx, xMatch[1], xMatch[2]);
+    if (xMatch && xMatch[1]) {
+      await handleTwitter(ctx, xMatch[1], xMatch[2], xMatch[3]);
       return;
+    }
+
+    const ytMatch = text.match(YT_LINK_REGEX);
+    if (ytMatch && ytMatch[1]) {
+        await handleYoutube(ctx, ytMatch[1], ytMatch[2]);
+        return;
     }
   }
 
-  return {
-    handleMessage,
-  };
+  return { handleMessage };
 }
