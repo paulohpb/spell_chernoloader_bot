@@ -31,10 +31,15 @@ export type Result<T> = Promise<[AppError | null, T | null]>;
 
 /**
  * Message format for LLM conversations (OpenAI-compatible format)
+ * Extended to support images for Vision models.
  */
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  images?: {
+    data: Buffer;
+    mimeType: string;
+  }[];
 }
 
 /**

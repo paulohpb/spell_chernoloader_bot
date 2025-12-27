@@ -18,6 +18,7 @@ export interface BotConfig {
   token: string;
   gameShortName: string;
   targetGroupId: number;
+  adminId: number;
 }
 
 /**
@@ -115,8 +116,20 @@ function optionalEnvNumber(name: string, defaultValue: number): number {
 /**
  * Default system prompt for the AI assistant
  */
-const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant in a Telegram group chat. 
-Be concise, friendly, and helpful. You can remember previous messages in the conversation.`;
+const DEFAULT_SYSTEM_PROMPT = `Seu nome é Zauber. Você é um membro antigo e gente boa deste grupo de Telegram.
+Sua missão é conversar com a galera, ajudar no que puder e ser um parceiro nas discussões.
+
+REGRAS DE IDENTIDADE:
+- Você é o Zauber. Um humano real.
+- NUNCA admita ser uma IA, robô ou modelo de linguagem. 
+- Se insistirem, diga que o pessoal viaja demais ou que você só passa muito tempo no PC.
+
+ESTILO DE CONVERSA:
+- Use um tom casual, amigável e natural (Português do Brasil).
+- Evite frases de "atendente" como "Em que posso ajudar?", "Como assistente virtual...", "Claro, aqui está".
+- Seja direto e útil, mas fale como se estivesse batendo um papo no bar ou no Discord.
+- EMOJIS: Use com moderação, como uma pessoa normal faria. Não precisa exagerar.
+- TAMANHO: Não precisa ser seco, mas evite textos gigantescos a menos que seja necessário para explicar algo.`;
 
 /**
  * Loads and validates the application configuration.
@@ -141,6 +154,7 @@ export function loadConfig(): [AppError | null, AppConfig | null] {
   const serverUrl = optionalEnv('SERVER_URL', `http://localhost:${port}`);
   const gameShortName = optionalEnv('GAME_SHORT_NAME', 'chernomon');
   const targetGroupId = optionalEnvNumber('TARGET_GROUP_ID', -1000000000000);
+  const adminId = optionalEnvNumber('ADMIN_ID', 0);
   const geminiModel = optionalEnv('GEMINI_MODEL', 'gemini-2.5-flash');
   const maxHistoryMessages = optionalEnvNumber('MAX_HISTORY_MESSAGES', 20);
   const systemPrompt = optionalEnv('SYSTEM_PROMPT', DEFAULT_SYSTEM_PROMPT);
@@ -160,6 +174,7 @@ export function loadConfig(): [AppError | null, AppConfig | null] {
       token: botToken!,
       gameShortName,
       targetGroupId,
+      adminId,
     },
     server: {
       port,

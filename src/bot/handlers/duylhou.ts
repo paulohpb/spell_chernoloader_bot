@@ -56,7 +56,11 @@ export function createDuylhouHandler(config: DuylhouHandlerConfig): DuylhouHandl
     if (!chatId || !userId) return;
 
     // Check if we should process this chat
-    if (targetChatIds && targetChatIds.length > 0 && !targetChatIds.includes(chatId)) {
+    // Allow if private chat OR if it's in the target list
+    const isPrivate = ctx.chat?.type === 'private';
+    const isTarget = targetChatIds && targetChatIds.includes(chatId);
+
+    if (!isPrivate && targetChatIds && targetChatIds.length > 0 && !isTarget) {
       return;
     }
 

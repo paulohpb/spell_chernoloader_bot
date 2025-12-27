@@ -11,7 +11,7 @@
  * =============================================================================
  */
 
-import { Bot } from 'grammy';
+import { Bot, GrammyError, HttpError } from 'grammy';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -32,7 +32,8 @@ import { todoService } from './services/todo.service'; // Legacy service
 import { createMediaHandler } from './bot/handlers/media';
 import { createLeaderboardHandler } from './bot/handlers/leaderboard';
 import { createRateLimiter } from './bot/middleware/rate-limiter';
-import { createDuylhouHandler } from './bot/handlers/duylhou'; // Assuming this was created or logic is inside media
+import { createDuylhouHandler } from './bot/handlers/duylhou'; 
+import { createAIHandler } from './bot/handlers/ai';
 
 // --- Main Application Logic ---
 
@@ -95,6 +96,14 @@ async function main() {
     database: db,
   });
 
+  const aiHandler = createAIHandler({
+      geminiService,
+      contextService,
+      botUsername: '@Spell_ZauberBot', // Hardcoded for now, or could fetch from bot info
+      systemPrompt: config.assistant.systemPrompt,
+      token: config.bot.token,
+  });
+
   const [rlError, rateLimiter] = createRateLimiter({
     maxRequests: 5,
     windowMs: 60 * 1000,
@@ -141,6 +150,11 @@ async function main() {
 
   // Command: TODO (Legacy)
   bot.hears(/#TODO/i, async (ctx) => {
+      // Security: Only Admin can use this
+      if (ctx.from?.id !== config.bot.adminId) {
+          return ctx.reply('⚠️ Somente o administrador pode usar este comando.');
+      }
+
       const text = ctx.message?.text || '';
       const user = ctx.from?.first_name || 'Desconhecido';
       const task = text.replace(/#TODO/i, '').trim();
@@ -162,8 +176,8 @@ async function main() {
     // 3. Check for Repeated Links (Duylhou)
     await duylhouHandler.handleMessage(ctx);
 
-    // 4. AI Logic (Example placeholder - connect contextService + geminiService here)
-    // if (ctx.message.text?.includes('@MyBot')) { ... }
+    // 4. AI Logic
+    await aiHandler.handleMessage(ctx);
   });
 
   // Callback Queries
@@ -206,6 +220,25 @@ async function main() {
   // Start Server & Bot
   app.listen(config.server.port, () => {
     console.log(`Web Server running on port ${config.server.port}`);
+  });
+
+  // Error Handling
+  bot.catch((err) => {
+    const ctx = err.ctx;
+    console.error(`Error while handling update ${ctx.update.update_id}:`);
+    const e = err.error;
+    
+    if (e instanceof GrammyError) {
+      if (e.description.includes('kicked from the group')) {
+        console.warn('⚠️ Bot was kicked from a group. Ignoring update.');
+        return;
+      }
+      console.error('Error in request:', e.description);
+    } else if (e instanceof HttpError) {
+      console.error('Could not contact Telegram:', e);
+    } else {
+      console.error('Unknown error:', e);
+    }
   });
 
   bot.start();
