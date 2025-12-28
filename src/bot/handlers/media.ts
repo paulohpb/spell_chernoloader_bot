@@ -1,459 +1,305 @@
 /**
  * =============================================================================
- * Media Handler - Social media link scraping and video embedding
+ * Media Handler - Multi-Platform Video Downloader
  * 
- * Handles Instagram and Twitter/X links, downloads videos, and re-uploads
- * them to the chat for better embedding.
+ * Handles Instagram (Embed method), TikTok (No-Watermark),
+ * Twitter/X (FixupX), Reddit (JSON API), and YouTube.
  * =============================================================================
  */
 
 import { Context, InputFile, InlineKeyboard } from 'grammy';
-import axios, { AxiosError } from 'axios';
-import ytdl from '@distube/ytdl-core'; // YouTube Library
-const instagramGetUrl = require('instagram-url-direct'); // Local Fallback
+import axios from 'axios';
+import ytdl from '@distube/ytdl-core';
 import { AppError, Result } from '../../assistant/types';
 import { auditLog } from '../../assistant/audit-log';
 
-/**
- * Media handler error codes
- */
+// --- Types & Config ---
+
 export const MEDIA_ERROR_CODES = {
-  INSTAGRAM_FETCH_FAILED: 'MEDIA_001',
-  TWITTER_FETCH_FAILED: 'MEDIA_002',
-  VIDEO_DOWNLOAD_FAILED: 'MEDIA_003',
-  VIDEO_NOT_FOUND: 'MEDIA_004',
-  SEND_VIDEO_FAILED: 'MEDIA_005',
-  YOUTUBE_FETCH_FAILED: 'MEDIA_006',
+  FETCH_FAILED: 'MEDIA_001',
+  DOWNLOAD_FAILED: 'MEDIA_002',
+  NOT_FOUND: 'MEDIA_003',
+  SEND_FAILED: 'MEDIA_004',
+  SIZE_LIMIT: 'MEDIA_005',
 } as const;
 
-/**
- * Media information extracted from social platforms
- */
 interface MediaInfo {
-  videoUrl: string;
+  videoUrl?: string;
+  imageUrl?: string;
   caption?: string;
   author?: string;
-  typename?: string;
+  platform: 'Instagram' | 'TikTok' | 'Twitter' | 'Reddit' | 'YouTube';
+  thumbnailUrl?: string;
 }
 
-/**
- * Configuration for media handler
- */
 export interface MediaHandlerConfig {
   targetGroupId: number;
 }
 
-/**
- * Media handler interface
- */
 export interface MediaHandler {
   handleMessage: (ctx: Context) => Promise<void>;
 }
 
-/**
- * HTTP headers for scraping requests
- * Simulates a real browser to avoid being blocked by Instagram/Twitter
- */
-const SCRAPE_HEADERS = {
-  'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-  'accept-language': 'en-US,en;q=0.9',
-  'connection': 'close',
-  'sec-fetch-mode': 'navigate',
+// --- Headers & Constants ---
+
+// Headers simulating a real browser to avoid blocks
+const BROWSER_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'viewport-width': '1280',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.5',
 };
 
-/**
- * Regex patterns for social media links
- */
-const IG_LINK_REGEX = /((?:https?:\/\/)?(?:www\.)?instagram\.com\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)[^ \n]*)/;
-const X_LINK_REGEX = /((?:https?:\/\/)?(?:twitter\.com|x\.com)\/([A-Za-z0-9_]+)\/status\/([0-9]+)[^ \n]*)/;
-const YT_LINK_REGEX = /((?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})[^ \n]*)/;
+const REGEX = {
+  INSTAGRAM: /((?:https?:\/\/)?(?:www\.)?instagram\.com\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)[^ \n]*)/,
+  TIKTOK: /((?:https?:\/\/)?(?:www\.|vm\.|vt\.)?tiktok\.com\/(@[\w.-]+\/video\/[\d]+|[\w-]+)[^ \n]*)/,
+  TWITTER: /((?:https?:\/\/)?(?:twitter\.com|x\.com)\/([A-Za-z0-9_]+)\/status\/([0-9]+)[^ \n]*)/,
+  REDDIT: /((?:https?:\/\/)?(?:www\.|old\.)?reddit\.com\/r\/[\w-]+\/comments\/([\w]+)[^ \n]*)/,
+  YOUTUBE: /((?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})[^ \n]*)/,
+};
 
-/**
- * Helper to escape Markdown special characters to prevent broken formatting
- */
+// --- Helper Functions ---
+
 function escapeMarkdown(text: string): string {
   if (!text) return '';
-  // Escapes: _ * [ ] ( ) ~ ` > # + - = | { } . !
-  return text.replace(/[_*[\\\\]()~`>#+\-=|"{}.!]/g, '\\$&');
+  return text.replace(/[_*[\\\]()~`>#+\-=|"{}.!]/g, '\\$&');
 }
 
-/**
- * Helper to truncate text
- */
-function truncateText(text: string, limit: number = 900): string {
+function truncate(text: string, limit: number = 800): string {
   if (text.length <= limit) return text;
   return text.substring(0, limit - 3) + '...';
 }
 
-/**
- * Creates a media error
- */
-function createMediaError(code: string, message: string, details?: string): AppError {
-  return {
-    code,
-    category: 'LLM', // Using LLM as a general "service" category
-    message,
-    details,
-  };
+function createError(code: string, msg: string, details?: string): AppError {
+  return { code, category: 'LLM', message: msg, details };
 }
 
-/**
- * List of public Cobalt instances for failover
- */
-const COBALT_INSTANCES = [
-  'https://co.wuk.sh/api/json',
-  'https://cobalt.kwiatekmiki.pl/api/json',
-  'https://tools.adithya.ip/api/json',
-  'https://cobalt.q1.pm/api/json',
-  'https://api.cobalt.tools/api/json' // Official as last resort
-];
+async function downloadBuffer(url: string): Result<Buffer> {
+  try {
+    const res = await axios.get(url, { 
+      responseType: 'arraybuffer',
+      headers: BROWSER_HEADERS 
+    });
+    return [null, Buffer.from(res.data)];
+  } catch (e: any) {
+    return [createError(MEDIA_ERROR_CODES.DOWNLOAD_FAILED, e.message), null];
+  }
+}
+
+// --- Platform Fetchers ---
 
 /**
- * Fetches Instagram media information using Cobalt API with Failover
+ * INSTAGRAM (Multi-Strategy Scraping)
+ * 1. Try Embed JSON (Best metadata)
+ * 2. Try Main Page Meta Tags (Fallback for video URL)
  */
-async function fetchInstagramMedia(fullUrl: string): Result<MediaInfo> {
-  let lastError: Error | null = null;
+async function fetchInstagram(postId: string): Promise<Result<MediaInfo>> {
+  // Strategy 1: Embed Page JSON
+  const embedUrl = `https://www.instagram.com/p/${postId}/embed/captioned/`;
+  try {
+    const { data: html } = await axios.get(embedUrl, { headers: BROWSER_HEADERS });
+    
+    const match = html.match(/\\"gql_data\\":([\s\S]*?)\}"\}/);
+    if (match && match[1]) {
+      let jsonStr = match[1]
+        .replace(/\\"/g, '"')
+        .replace(/\\\//g, '/')
+        .replace(/\\\\/g, '\\');
 
-  // 1. Try Cobalt Instances
-  for (const cobaltUrl of COBALT_INSTANCES) {
-    try {
-      console.log(`Trying Cobalt instance: ${cobaltUrl}`);
-      
-      const response = await axios.post(
-        cobaltUrl, 
-        {
-            url: fullUrl,
-            vCodec: 'h264', // IMPORTANT: Forces h264 which is better compatible with Telegram
-            filenamePattern: 'basic',
-            disableMetadata: true // Reduces payload size and parsing errors
-        },
-        {
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            // IMPORTANT: Use a real browser User-Agent
-            'User-Agent': SCRAPE_HEADERS['User-Agent']
-          },
-          timeout: 8000 // Increased timeout slightly
-        }
-      );
+      const data = JSON.parse(jsonStr);
+      const media = data.shortcode_media || data.graphql?.shortcode_media;
 
-      const data = response.data;
-
-      if (data.status === 'error') {
-        // console.warn(`Instance ${cobaltUrl} returned error: ${data.text}`);
-        throw new Error(data.text || 'Cobalt API error');
-      }
-
-      let videoUrl: string | undefined;
-      
-      if (data.url) {
-          videoUrl = data.url;
-      } else if (data.picker && data.picker.length > 0) {
-          const item = data.picker.find((i: any) => i.type === 'video') || data.picker[0];
-          videoUrl = item.url;
-      }
-
-      if (videoUrl) {
-        auditLog.trace(`Instagram video found via ${cobaltUrl}`);
-        return [null, { 
-            videoUrl, 
-            typename: 'CobaltVideo',
-            caption: data.filename || undefined 
+      if (media) {
+        return [null, {
+          platform: 'Instagram',
+          videoUrl: media.video_url,
+          imageUrl: media.display_url,
+          author: media.owner?.username,
+          caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || ''
         }];
       }
-      
-    } catch (e: any) {
-      lastError = e;
-      // Continue to next instance
     }
+  } catch (e) {
+    // Ignore embed error and try fallback
+    console.warn(`IG Embed failed for ${postId}, trying fallback...`);
   }
 
-  // 2. Try Local Fallback (instagram-url-direct)
+  // Strategy 2: Main Page Meta Tags (OG Tags)
+  // This is very reliable for public posts to get the video URL directly
+  const mainUrl = `https://www.instagram.com/p/${postId}/`;
   try {
-      console.log('Cobalt failed, trying local fallback (instagram-url-direct)...');
-      const response = await instagramGetUrl(fullUrl);
+    const { data: html } = await axios.get(mainUrl, { headers: BROWSER_HEADERS });
+
+    const videoMatch = html.match(/<meta property="og:video" content="([^"]+)"/);
+    const imageMatch = html.match(/<meta property="og:image" content="([^"]+)"/);
+    const descMatch = html.match(/<meta property="og:description" content="([^"]+)"/); // Usually "Username: Caption"
+    
+    if (videoMatch || imageMatch) {
+      let videoUrl = videoMatch ? videoMatch[1].replace(/&amp;/g, '&') : undefined;
+      let imageUrl = imageMatch ? imageMatch[1].replace(/&amp;/g, '&') : undefined;
       
-      if (response.url_list && response.url_list.length > 0) {
-          auditLog.trace(`Instagram video found via Local Fallback`);
-          return [null, {
-              videoUrl: response.url_list[0],
-              typename: 'LocalFallback'
-          }];
+      // Try to extract author/caption from description
+      let author = 'Instagram User';
+      let caption = '';
+      if (descMatch) {
+          const desc = descMatch[1].replace(/&amp;/g, '&');
+          const parts = desc.split(':');
+          if (parts.length > 1) {
+              author = parts[0].trim();
+              caption = parts.slice(1).join(':').trim();
+          }
       }
-  } catch (localError: any) {
-      console.error('Local fallback failed:', localError.message);
-  }
 
-  // All methods failed
-  const errorMsg = lastError?.message || 'All fetch methods failed';
-  console.error('All fetch methods failed for URL:', fullUrl);
-  
-  const error = createMediaError(
-    MEDIA_ERROR_CODES.INSTAGRAM_FETCH_FAILED,
-    'Failed to fetch Instagram media (All mirrors & local failed)',
-    errorMsg
-  );
-  return [error, null];
-}
-
-/**
- * Fetches Twitter/X media information
- */
-async function fetchTwitterMedia(username: string, tweetId: string): Result<MediaInfo> {
-  const apiUrl = `https://api.fxtwitter.com/${username}/status/${tweetId}`;
-
-  const result = await axios.get(apiUrl, { headers: SCRAPE_HEADERS })
-    .then((response): [null, any] => [null, response.data])
-    .catch((e: AxiosError): [AppError, null] => {
-      const error = createMediaError(
-        MEDIA_ERROR_CODES.TWITTER_FETCH_FAILED,
-        'Failed to fetch Twitter/X media',
-        e.message
-      );
-      return [error, null];
-    });
-
-  if (result[0]) {
-    auditLog.record(result[0].code, { username, tweetId, error: result[0].message });
-    return [result[0], null];
-  }
-
-  const data = result[1];
-  
-  if (!data?.tweet?.media?.videos?.length) {
-    const error = createMediaError(
-      MEDIA_ERROR_CODES.VIDEO_NOT_FOUND,
-      'No video found in tweet',
-      tweetId
-    );
-    auditLog.record(error.code, { username, tweetId });
-    return [error, null];
-  }
-
-  auditLog.trace(`Twitter video found for tweet ${tweetId}`);
-  return [null, {
-    videoUrl: data.tweet.media.videos[0].url,
-    caption: data.tweet.text,
-    author: data.tweet.author?.name || data.tweet.author?.screen_name || username,
-  }];
-}
-
-/**
- * Downloads video from URL
- */
-async function downloadVideo(url: string): Result<Buffer> {
-  const result = await axios.get(url, { 
-    responseType: 'arraybuffer', 
-    headers: SCRAPE_HEADERS 
-  })
-    .then((response): [null, Buffer] => [null, Buffer.from(response.data)])
-    .catch((e: AxiosError): [AppError, null] => {
-      const error = createMediaError(
-        MEDIA_ERROR_CODES.VIDEO_DOWNLOAD_FAILED,
-        'Failed to download video',
-        e.message
-      );
-      return [error, null];
-    });
-
-  if (result[0]) {
-    auditLog.record(result[0].code, { url: url.substring(0, 100), error: result[0].message });
-  }
-
-  return result;
-}
-
-/**
- * Handles Instagram link in message
- */
-async function handleInstagram(ctx: Context, fullUrl: string, postId: string): Promise<void> {
-  const statusMsg = await ctx.reply('🔎 Procurando vídeo no Instagram...', { 
-    reply_parameters: { message_id: ctx.message!.message_id } 
-  });
-
-  const [mediaError, media] = await fetchInstagramMedia(fullUrl);
-
-  if (mediaError || !media) {
-    const errorMsg = mediaError?.details || 'Erro desconhecido';
-    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, `❌ Vídeo não encontrado.\n\n_(Log: ${errorMsg})_`, { parse_mode: 'Markdown' })
-      .catch(() => {});
-    return;
-  }
-
-  const [downloadError, videoBuffer] = await downloadVideo(media.videoUrl);
-
-  if (downloadError || !videoBuffer) {
-    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '⚠️ Erro ao baixar o arquivo.')
-      .catch(() => {});
-    return;
-  }
-
-  await ctx.replyWithChatAction('upload_video');
-
-  // Construct structured caption
-  const authorLine = media.author ? `👤 *${escapeMarkdown(media.author)}*\n` : '';
-  const captionLine = media.caption ? `${escapeMarkdown(truncateText(media.caption))}` : '';
-  
-  const finalCaption = (authorLine + captionLine).trim() || '🎥 Vídeo do Instagram';
-
-  const keyboard = new InlineKeyboard().url('Open in Instagram ↗️', fullUrl);
-
-  const sendResult = await ctx.replyWithVideo(
-    new InputFile(videoBuffer, `insta_${postId}.mp4`),
-    {
-        caption: finalCaption,
-        parse_mode: 'MarkdownV2',
-        reply_markup: keyboard
+      return [null, {
+        platform: 'Instagram',
+        videoUrl,
+        imageUrl,
+        author,
+        caption
+      }];
     }
-  )
-    .then((): [null, true] => [null, true])
-    .catch((e: Error): [AppError, null] => {
-      const error = createMediaError(
-        MEDIA_ERROR_CODES.SEND_VIDEO_FAILED,
-        'Failed to send video',
-        e.message
-      );
-      return [error, null];
-    });
-
-  if (sendResult[0]) {
-    auditLog.record(sendResult[0].code, { postId, error: sendResult[0].message });
-    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '⚠️ Erro ao enviar vídeo para o chat.')
-      .catch(() => {});
-    return;
+  } catch (e: any) {
+    return [createError(MEDIA_ERROR_CODES.FETCH_FAILED, `All strategies failed: ${e.message}`), null];
   }
 
-  await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id).catch(() => {});
-  auditLog.trace(`Instagram video sent successfully for post ${postId}`);
+  return [createError(MEDIA_ERROR_CODES.NOT_FOUND, 'Instagram content not found in Embed or Meta tags'), null];
 }
 
 /**
- * Handles Twitter/X link in message
+ * TIKTOK (TikWM API Method)
+ * Uses public API to get No-Watermark videos.
  */
-async function handleTwitter(ctx: Context, fullUrl: string, username: string, tweetId: string): Promise<void> {
-  const statusMsg = await ctx.reply('🔎 Procurando vídeo no X...', { 
-    reply_parameters: { message_id: ctx.message!.message_id } 
-  });
+async function fetchTikTok(url: string): Promise<Result<MediaInfo>> {
+  try {
+    const apiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`;
+    const { data } = await axios.get(apiUrl);
 
-  const [mediaError, media] = await fetchTwitterMedia(username, tweetId);
+    if (data.code !== 0) {
+      return [createError(MEDIA_ERROR_CODES.FETCH_FAILED, 'TikWM API Error', data.msg), null];
+    }
 
-  if (mediaError || !media) {
-    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '❌ Vídeo não encontrado.')
-      .catch(() => {});
+    const videoData = data.data;
+    return [null, {
+      platform: 'TikTok',
+      videoUrl: videoData.play, // No-Watermark link
+      author: videoData.author?.nickname || videoData.author?.unique_id,
+      caption: videoData.title,
+      thumbnailUrl: videoData.cover
+    }];
+  } catch (e: any) {
+    return [createError(MEDIA_ERROR_CODES.FETCH_FAILED, e.message), null];
+  }
+}
+
+/**
+ * REDDIT (JSON API Method)
+ * Appends .json to URL to get raw data.
+ */
+async function fetchReddit(url: string): Promise<Result<MediaInfo>> {
+  try {
+    const jsonUrl = url.split('?')[0].replace(/\/$/, '') + '.json';
+    const { data } = await axios.get(jsonUrl, { headers: BROWSER_HEADERS });
+
+    const post = data[0]?.data?.children?.[0]?.data;
+    if (!post) return [createError(MEDIA_ERROR_CODES.NOT_FOUND, 'Reddit post structure invalid'), null];
+
+    let videoUrl = post.secure_media?.reddit_video?.fallback_url;
+    // Handle external video links (e.g., YouTube on Reddit)
+    if (!videoUrl && post.url && post.url.match(/\.(mp4|mov)$/)) {
+        videoUrl = post.url;
+    }
+
+    return [null, {
+      platform: 'Reddit',
+      videoUrl: videoUrl,
+      imageUrl: !videoUrl && post.url.match(/\.(jpg|png|jpeg|gif)$/) ? post.url : undefined,
+      author: post.author,
+      caption: post.title,
+    }];
+  } catch (e: any) {
+    return [createError(MEDIA_ERROR_CODES.FETCH_FAILED, e.message), null];
+  }
+}
+
+/**
+ * TWITTER/X (FixupX API Method)
+ */
+async function fetchTwitter(tweetId: string): Promise<Result<MediaInfo>> {
+  try {
+    const apiUrl = `https://api.fxtwitter.com/status/${tweetId}`;
+    const { data } = await axios.get(apiUrl, { headers: { 'User-Agent': 'TelegramBot' } });
+
+    const video = data.tweet?.media?.videos?.[0];
+    if (!video) return [createError(MEDIA_ERROR_CODES.NOT_FOUND, 'No video in tweet'), null];
+
+    return [null, {
+      platform: 'Twitter',
+      videoUrl: video.url,
+      author: data.tweet.author?.name,
+      caption: data.tweet.text
+    }];
+  } catch (e: any) {
+    return [createError(MEDIA_ERROR_CODES.FETCH_FAILED, e.message), null];
+  }
+}
+
+// --- Main Processor ---
+
+async function processMedia(ctx: Context, fetcher: Promise<Result<MediaInfo>>, originalUrl: string, statusMsgId: number) {
+  const [err, media] = await fetcher;
+
+  if (err || !media) {
+    await ctx.api.editMessageText(ctx.chat!.id, statusMsgId, `❌ Erro: ${err?.message || 'Conteúdo não encontrado'}`).catch(() => {});
     return;
   }
 
-  const [downloadError, videoBuffer] = await downloadVideo(media.videoUrl);
+  if (media.videoUrl) {
+    await ctx.api.editMessageText(ctx.chat!.id, statusMsgId, '⬇️ Baixando vídeo...').catch(() => {});
+    const [dlErr, buffer] = await downloadBuffer(media.videoUrl);
 
-  if (downloadError || !videoBuffer) {
-    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '⚠️ Erro ao baixar.')
-      .catch(() => {});
-    return;
-  }
+    if (dlErr || !buffer) {
+      await ctx.api.editMessageText(ctx.chat!.id, statusMsgId, '⚠️ Falha no download do arquivo.').catch(() => {});
+      return;
+    }
 
-  await ctx.replyWithChatAction('upload_video');
+    if (buffer.length > 50 * 1024 * 1024) { // 50MB Limit
+       await ctx.api.editMessageText(ctx.chat!.id, statusMsgId, '⚠️ Vídeo muito grande (>50MB) para o Telegram.').catch(() => {});
+       return;
+    }
 
-  // Construct structured caption
-  const authorName = media.author || username;
-  const authorLine = `👤 *${escapeMarkdown(authorName)}*\n`;
-  const captionLine = media.caption ? `${escapeMarkdown(truncateText(media.caption))}` : '';
-  
-  const finalCaption = (authorLine + captionLine).trim();
+    await ctx.replyWithChatAction('upload_video');
 
-  const keyboard = new InlineKeyboard().url('Open in X ↗️', fullUrl);
+    const authorLine = media.author ? `👤 *${escapeMarkdown(media.author)}*\n` : '';
+    const captionLine = media.caption ? escapeMarkdown(truncate(media.caption)) : '';
+    
+    const keyboard = new InlineKeyboard().url(`Open in ${media.platform} ↗️`, originalUrl);
 
-  const sendResult = await ctx.replyWithVideo(
-    new InputFile(videoBuffer, `x_${tweetId}.mp4`),
-    {
-      caption: finalCaption,
+    await ctx.replyWithVideo(new InputFile(buffer, `${media.platform}_${Date.now()}.mp4`), {
+      caption: authorLine + captionLine,
       parse_mode: 'MarkdownV2',
       reply_markup: keyboard
-    }
-  )
-    .then((): [null, true] => [null, true])
-    .catch((e: Error): [AppError, null] => {
-      const error = createMediaError(
-        MEDIA_ERROR_CODES.SEND_VIDEO_FAILED,
-        'Failed to send video',
-        e.message
-      );
-      return [error, null];
     });
 
-  if (sendResult[0]) {
-    auditLog.record(sendResult[0].code, { tweetId, error: sendResult[0].message });
-    await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '⚠️ Erro ao enviar vídeo.')
-      .catch(() => {});
+  } else if (media.imageUrl) {
+      const [dlErr, buffer] = await downloadBuffer(media.imageUrl);
+      if (buffer) {
+          await ctx.replyWithPhoto(new InputFile(buffer), {
+              caption: `📷 *${escapeMarkdown(media.author || 'Image')}*\n${escapeMarkdown(truncate(media.caption || ''))}`,
+              parse_mode: 'MarkdownV2',
+              reply_markup: new InlineKeyboard().url(`Open in ${media.platform} ↗️`, originalUrl)
+          });
+      }
+  } else {
+    await ctx.api.editMessageText(ctx.chat!.id, statusMsgId, '⚠️ Nenhum vídeo encontrado neste link.').catch(() => {});
     return;
   }
 
-  await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id).catch(() => {});
-  auditLog.trace(`Twitter video sent successfully for tweet ${tweetId}`);
+  // Cleanup status message
+  await ctx.api.deleteMessage(ctx.chat!.id, statusMsgId).catch(() => {});
+  auditLog.trace(`Processed ${media.platform} link: ${originalUrl}`);
 }
 
-/**
- * Handles YouTube link in message
- */
-async function handleYoutube(ctx: Context, fullUrl: string, videoId: string): Promise<void> {
-    const statusMsg = await ctx.reply('🔎 Acessando YouTube...', { 
-      reply_parameters: { message_id: ctx.message!.message_id } 
-    });
-  
-    try {
-      const url = fullUrl.startsWith('http') ? fullUrl : `https://www.youtube.com/watch?v=${videoId}`;
-      const info = await ytdl.getInfo(url);
-      const formats = ytdl.filterFormats(info.formats, 'audioandvideo');
-      
-      let format = formats.find(f => f.qualityLabel === '720p');
-      if (!format) format = formats.find(f => f.qualityLabel === '360p');
-      if (!format) {
-          formats.sort((a, b) => (b.height || 0) - (a.height || 0));
-          format = formats.find(f => (f.height || 0) <= 1080);
-      }
-      if (!format && formats.length > 0) format = formats[formats.length - 1]; 
+// --- Handler Factory ---
 
-      if (!format) {
-          await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '❌ Formato compatível não encontrado.');
-          return;
-      }
-
-      if (format.contentLength && parseInt(format.contentLength) > 52428800) {
-          await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '⚠️ Vídeo muito grande (>50MB).');
-          return;
-      }
-
-      await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, `⬇️ Baixando: ${info.videoDetails.title}...`);
-      await ctx.replyWithChatAction('upload_video');
-
-      const stream = ytdl(url, { format: format });
-      
-      // Construct Caption
-      const authorLine = `👤 *${escapeMarkdown(info.videoDetails.author.name)}*\n`;
-      const titleLine = escapeMarkdown(truncateText(info.videoDetails.title));
-      const finalCaption = authorLine + titleLine;
-
-      // Create Button
-      const keyboard = new InlineKeyboard().url('Open in YouTube ↗️', url);
-
-      await ctx.replyWithVideo(new InputFile(stream), { 
-          caption: finalCaption,
-          parse_mode: 'MarkdownV2',
-          reply_markup: keyboard
-      });
-
-      await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id).catch(() => {});
-    } catch (e: any) {
-        auditLog.record(MEDIA_ERROR_CODES.YOUTUBE_FETCH_FAILED, { videoId, error: e.message });
-        await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '⚠️ Erro no YouTube.').catch(() => {});
-    }
-}
-
-/**
- * Creates the media handler.
- */
 export function createMediaHandler(config: MediaHandlerConfig): MediaHandler {
   const { targetGroupId } = config;
 
@@ -461,25 +307,62 @@ export function createMediaHandler(config: MediaHandlerConfig): MediaHandler {
     if (!ctx.message) return;
     const text = ctx.message.text || ctx.message.caption || '';
     if (!text) return;
-
     if (ctx.chat?.type !== 'private' && ctx.chat?.id !== targetGroupId) return;
 
-    const igMatch = text.match(IG_LINK_REGEX);
-    if (igMatch && igMatch[1]) {
-      await handleInstagram(ctx, igMatch[1], igMatch[2]);
-      return;
-    }
+    // Detect Links
+    const igMatch = text.match(REGEX.INSTAGRAM);
+    const ttMatch = text.match(REGEX.TIKTOK);
+    const twMatch = text.match(REGEX.TWITTER);
+    const rdMatch = text.match(REGEX.REDDIT);
+    const ytMatch = text.match(REGEX.YOUTUBE);
 
-    const xMatch = text.match(X_LINK_REGEX);
-    if (xMatch && xMatch[1]) {
-      await handleTwitter(ctx, xMatch[1], xMatch[2], xMatch[3]);
-      return;
-    }
+    let statusMsg;
 
-    const ytMatch = text.match(YT_LINK_REGEX);
-    if (ytMatch && ytMatch[1]) {
-        await handleYoutube(ctx, ytMatch[1], ytMatch[2]);
-        return;
+    if (igMatch && igMatch[2]) {
+      statusMsg = await ctx.reply('🔎 Instagram (Embed)...', { reply_parameters: { message_id: ctx.message.message_id } });
+      await processMedia(ctx, fetchInstagram(igMatch[2]), igMatch[0], statusMsg.message_id);
+    } 
+    else if (ttMatch) {
+      statusMsg = await ctx.reply('🔎 TikTok (No-Watermark)...', { reply_parameters: { message_id: ctx.message.message_id } });
+      await processMedia(ctx, fetchTikTok(ttMatch[0]), ttMatch[0], statusMsg.message_id);
+    }
+    else if (twMatch && twMatch[3]) {
+      statusMsg = await ctx.reply('🔎 X/Twitter...', { reply_parameters: { message_id: ctx.message.message_id } });
+      await processMedia(ctx, fetchTwitter(twMatch[3]), twMatch[0], statusMsg.message_id);
+    }
+    else if (rdMatch) {
+      statusMsg = await ctx.reply('🔎 Reddit...', { reply_parameters: { message_id: ctx.message.message_id } });
+      await processMedia(ctx, fetchReddit(rdMatch[0]), rdMatch[0], statusMsg.message_id);
+    }
+    else if (ytMatch && ytMatch[2]) {
+       // YouTube handling (Simple & Robust)
+       try {
+           statusMsg = await ctx.reply('🔎 YouTube...', { reply_parameters: { message_id: ctx.message.message_id } });
+           const url = ytMatch[0];
+           const info = await ytdl.getInfo(url);
+           // Try 720p first, then fallback
+           let format = ytdl.chooseFormat(info.formats, { quality: 'highest', filter: 'audioandvideo' });
+           if (!format || (format.height && format.height > 720)) {
+               // If >720p, try finding a smaller one explicitly
+               const formats = ytdl.filterFormats(info.formats, 'audioandvideo');
+               const f720 = formats.find(f => f.qualityLabel === '720p');
+               format = f720 || formats[0]; // fallback
+           }
+           
+           if (!format) throw new Error('No format');
+
+           const stream = ytdl(url, { format });
+           const caption = `👤 *${escapeMarkdown(info.videoDetails.author.name)}*\n${escapeMarkdown(truncate(info.videoDetails.title))}`;
+           
+           await ctx.replyWithVideo(new InputFile(stream), {
+               caption: caption,
+               parse_mode: 'MarkdownV2',
+               reply_markup: new InlineKeyboard().url('Open in YouTube ↗️', url)
+           });
+           await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id).catch(() => {});
+       } catch (e) {
+           if(statusMsg) await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id, '❌ Erro no YouTube.').catch(() => {});
+       }
     }
   }
 
