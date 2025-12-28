@@ -18,13 +18,9 @@ import path from 'path';
 
 // --- Configuration & Logging ---
 import { loadConfig } from './config';
-import { auditLog } from './assistant/audit-log';
-import { formatError } from './assistant/errors';
 
 // --- Services ---
 import { createDatabase } from './database';
-import { createGeminiService } from './assistant/services/gemini.service';
-import { createContextService } from './assistant/context';
 import { gameService } from './game/services/game.service'; // Legacy service (to be refactored later)
 import { todoService } from './services/todo.service'; // Legacy service
 
@@ -32,16 +28,14 @@ import { todoService } from './services/todo.service'; // Legacy service
 import { createMediaHandler } from './bot/handlers/media';
 import { createLeaderboardHandler } from './bot/handlers/leaderboard';
 import { createRateLimiter } from './bot/middleware/rate-limiter';
-import { createDuylhouHandler } from './bot/handlers/duylhou'; 
-import { createAIHandler } from './bot/handlers/ai';
-
+import { createDuylhouHandler } from './bot/handlers/duylhou';
 // --- Main Application Logic ---
 
 async function main() {
   // 1. Load Configuration
   const [configError, config] = loadConfig();
   if (configError || !config) {
-    console.error('Failed to load configuration:', configError ? formatError(configError) : 'Unknown error');
+    console.error('Failed to load configuration:', configError ? configError.message : 'Unknown error');
     process.exit(1);
   }
 
@@ -57,28 +51,7 @@ async function main() {
   });
 
   if (dbError || !db) {
-    auditLog.record(dbError?.code || 'DB_INIT_FAIL', { error: dbError?.message });
-    process.exit(1);
-  }
-
-  // 3. Initialize Services
-  const [geminiError, geminiService] = createGeminiService({
-    apiKey: config.assistant.geminiApiKey,
-    model: config.assistant.geminiModel,
-  });
-
-  if (geminiError || !geminiService) {
-    auditLog.record(geminiError?.code || 'AI_INIT_FAIL', { error: geminiError?.message });
-    process.exit(1);
-  }
-
-  const [contextError, contextService] = createContextService({
-    database: db,
-    maxMessages: config.assistant.maxHistoryMessages,
-  });
-
-  if (contextError || !contextService) {
-    auditLog.record(contextError?.code || 'CTX_INIT_FAIL', { error: contextError?.message });
+    console.error('Failed to initialize database:', dbError?.message || 'Unknown error'); // Added a console.error as a replacement for auditLog
     process.exit(1);
   }
 
@@ -176,8 +149,7 @@ async function main() {
     // 3. Check for Repeated Links (Duylhou)
     await duylhouHandler.handleMessage(ctx);
 
-    // 4. AI Logic
-    await aiHandler.handleMessage(ctx);
+
   });
 
   // Callback Queries
