@@ -10,6 +10,7 @@
 export type ErrorCategory =
   | 'CONFIGURATION'
   | 'LLM'
+  | 'MEDIA' // 
   | 'UNKNOWN';
 
 /**
