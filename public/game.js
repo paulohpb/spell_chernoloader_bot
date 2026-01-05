@@ -24,6 +24,29 @@ const els = {
     btnOpt2: document.getElementById('btn-option-2')
 };
 
+// Starter data - MUST match backend starters exactly
+const startersByGen = {
+    1: ['Bulbasaur', 'Charmander', 'Squirtle', 'Pikachu'],
+    2: ['Chikorita', 'Cyndaquil', 'Totodile'],
+    3: ['Treecko', 'Torchic', 'Mudkip'],
+    4: ['Turtwig', 'Chimchar', 'Piplup'],
+    5: ['Snivy', 'Tepig', 'Oshawott'],
+    6: ['Chespin', 'Fennekin', 'Froakie'],
+    7: ['Rowlet', 'Litten', 'Popplio'],
+    8: ['Grookey', 'Scorbunny', 'Sobble']
+};
+
+/**
+ * Start adventure events - labels in Portuguese
+ * Must match backend startAdventureWeights events
+ */
+const startAdventureEvents = [
+    { event: 'CATCH_POKEMON', label: 'Pokémon Selvagem' },
+    { event: 'BATTLE_TRAINER', label: 'Treinador' },
+    { event: 'BUY_POTIONS', label: 'Loja' },
+    { event: 'NOTHING', label: 'Nada' }
+];
+
 if (els.playerName) els.playerName.textContent = user.first_name;
 
 // --- CLASSE DA ROLETA (Baseada no wheel.component.ts) ---
@@ -174,70 +197,39 @@ Try closing and reopening.`;
 
 // Variável para impedir cliques duplos durante animação
 let isAnimating = false;
+// Flag to prevent double-triggering during the entire gen roulette flow
+let genRouletteInProgress = false;
 
+/**
+ * Generic action sender - for actions WITHOUT roulette animation
+ * For roulette actions, use triggerGenRoulette, triggerStarterRoulette, etc.
+ */
 async function sendAction(action, payload = {}) {
-    if (isAnimating) return; // Bloqueia se estiver rodando
+    if (isAnimating) return;
 
     try {
         els.mainBtn.disabled = true;
-        
-        // 1. Prepara a Roleta antes de chamar a API (se for uma ação de sorteio)
-        let rouletteItems = null;
-        if (action === 'SPIN_STARTER') {
-            // Exemplo: Lista hardcoded ou baseada na geração selecionada
-            // Idealmente isso viria do backend, mas podemos simular para visual
-            rouletteItems = [
-                { label: 'Planta' }, { label: 'Fogo' }, { label: 'Água' }, { label: '???' } 
-            ];
-            setupRouletteUI(rouletteItems);
-        } else if (action === 'SPIN_MAIN_ADVENTURE' || action === 'SPIN_START_ADVENTURE') {
-             rouletteItems = [
-                { label: 'Captura' }, { label: 'Batalha' }, { label: 'Item' }, { label: 'Nada' }
-            ];
-            setupRouletteUI(rouletteItems);
-        } else {
-             els.text.textContent = "Loading...";
-        }
+        els.text.textContent = "Carregando...";
 
-        // 2. Chama a API
         const res = await fetch(`${API_BASE}/action`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userId, action, ...payload })
         });
         
-        if (!res.ok) throw new Error("Action failed");
-        const newState = await res.json();
-
-        // 3. Se configuramos a roleta, rodamos ela até o resultado
-        if (rouletteItems) {
-            isAnimating = true;
-            
-            // Decidir qual label ganhar baseada no novo estado
-            let targetLabel = decideTargetLabel(action, newState, rouletteItems);
-            
-            roulette.spinTo(targetLabel, () => {
-                isAnimating = false;
-                // Esconde roleta e mostra resultado final
-                document.getElementById('roulette-canvas').style.display = 'none';
-                els.sprite.style.display = 'block'; // Volta sprite se tiver
-                renderState(newState);
-            });
-        } else {
-            // Sem roleta, renderiza direto
-            renderState(newState);
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Action failed');
         }
+        
+        const newState = await res.json();
+        renderState(newState);
 
     } catch (e) {
-        console.error(e);
-        isAnimating = false;
-        els.text.textContent = "Erro de conexão. Tente de novo.";
-        
-        // CORREÇÃO CRÍTICA: Se der erro, mostra o botão de novo para o usuário tentar clicar
-        els.mainBtn.style.display = 'block'; 
+        console.error('sendAction error:', e);
+        els.text.textContent = `Erro: ${e.message}. Tente novamente.`;
+        els.mainBtn.style.display = 'block';
         els.mainBtn.disabled = false;
-    } finally {
-        if (!isAnimating) els.mainBtn.disabled = false;
     }
 }
 
@@ -302,86 +294,123 @@ function renderState(state) {
 
     switch (state.phase) {
         case 'GEN_ROULETTE':
-            els.title.textContent = "Escolha a Geração";
-            els.text.textContent = "Selecione sua geração Pokémon favorita:";
+            els.title.textContent = "🎰 Sorteio de Geração";
+            els.text.textContent = "Toque em qualquer botão para descobrir sua geração!";
             els.secControls.style.display = 'flex';
             els.secControls.style.flexWrap = 'wrap';
             els.secControls.style.justifyContent = 'center';
+            els.secControls.style.gap = '8px';
             
             for (let i = 1; i <= 8; i++) {
                 const btn = document.createElement('button');
                 btn.className = 'game-btn small';
                 btn.style.width = '45px';
                 btn.textContent = i;
-                btn.onclick = () => sendAction('SELECT_GEN', { selection: i });
+                // ALL buttons trigger spin to the PRE-DETERMINED generation
+                // state.generation was already set by backend's spinGen()
+                btn.onclick = () => triggerGenRoulette(state.generation);
                 els.secControls.appendChild(btn);
             }
             break;
 
         case 'GENDER_ROULETTE':
-            els.title.textContent = "Informações do Treinador";
-            els.text.textContent = `Geração ${state.generation} selecionada! Agora, você é Menino ou Menina?`;
+            els.title.textContent = "👤 Escolha seu Treinador";
+            els.text.textContent = `🎉 Geração ${state.generation} sorteada! Você é menino ou menina?`;
             els.secControls.style.display = 'flex';
+            els.secControls.style.gap = '12px';
+            els.secControls.style.justifyContent = 'center';
             
             const btnBoy = document.createElement('button');
-            btnBoy.className = 'game-btn small';
-            btnBoy.textContent = '👦 Menino';
-            btnBoy.onclick = () => sendAction('SELECT_GENDER', { selection: 'male' });
+            btnBoy.className = 'game-btn';
+            btnBoy.innerHTML = '👦<br>Menino';
+            btnBoy.style.padding = '15px 25px';
+            btnBoy.onclick = () => selectGender('male');
             
             const btnGirl = document.createElement('button');
-            btnGirl.className = 'game-btn small';
-            btnGirl.textContent = '👧 Menina';
-            btnGirl.onclick = () => sendAction('SELECT_GENDER', { selection: 'female' });
+            btnGirl.className = 'game-btn';
+            btnGirl.innerHTML = '👧<br>Menina';
+            btnGirl.style.padding = '15px 25px';
+            btnGirl.onclick = () => selectGender('female');
 
             els.secControls.appendChild(btnBoy);
             els.secControls.appendChild(btnGirl);
             break;
 
         case 'STARTER_ROULETTE':
-            els.mainBtn.style.display = 'block'; // Volta o botão principal
-            els.title.textContent = "Seu Parceiro";
-            els.text.textContent = `Você é ${state.gender === 'male' ? 'um Menino' : 'uma Menina'}! Hora de pegar seu Pokémon Inicial.`;
-            els.mainBtn.textContent = "🎲 PEGAR INICIAL";
-            els.mainBtn.onclick = () => sendAction('SPIN_STARTER');
+            els.title.textContent = "🎲 Seu Primeiro Parceiro";
+            const genderLabel = state.gender === 'male' ? 'um Treinador' : 'uma Treinadora';
+            els.text.textContent = `Você é ${genderLabel} da Geração ${state.generation}! Hora de conhecer seu Pokémon inicial.`;
+            els.mainBtn.style.display = 'block';
+            els.mainBtn.disabled = false;
+            els.mainBtn.style.opacity = '1';
+            els.mainBtn.textContent = "🎲 SORTEAR INICIAL";
+            els.mainBtn.onclick = () => triggerStarterRoulette(state.generation);
             break;
 
         case 'START_ADVENTURE':
-            // Show starter
-            const starter = state.team[0];
-            if (starter) {
-                showPokemon(starter);
-                els.title.textContent = `Você obteve ${starter.name}!`;
-                els.text.textContent = "Sua jornada começa. O que fará primeiro?";
-                els.mainBtn.style.display = 'block';
-                els.mainBtn.textContent = "🎲 GIRAR EVENTO";
-                els.mainBtn.onclick = () => sendAction('SPIN_START_ADVENTURE');
-            } else {
-                // Estado inconsistente (sem time), reseta
-                sendAction('RESET');
+            const starterPokemon = state.team[0];
+
+            if (!starterPokemon) {
+                els.title.textContent = "⚠️ Erro";
+                els.text.textContent = "Sessão inválida. Reiniciando...";
+                setTimeout(() => sendAction('RESET'), 1500);
+                break;
             }
+
+            showPokemon(starterPokemon);
+
+            // First time in START_ADVENTURE or after NOTHING event
+            if (state.lastEvent === 'NOTHING') {
+                els.title.textContent = "🤷 Nada aconteceu...";
+                els.text.textContent = state.lastEventResult;
+            } else if (!state.lastEvent) {
+                // First time - just got starter
+                const shinyPrefix = starterPokemon.shiny ? '✨ ' : '';
+                const shinySuffix = starterPokemon.shiny ? ' ✨' : '';
+                els.title.textContent = `${shinyPrefix}${starterPokemon.name}${shinySuffix}`;
+                els.text.textContent = "Sua jornada começa agora! O que fará primeiro?";
+            } else {
+                // Returning from other state (shouldn't happen normally)
+                els.title.textContent = `${starterPokemon.name}`;
+                els.text.textContent = state.lastEventResult || "Continue sua aventura!";
+            }
+
+            els.mainBtn.style.display = 'block';
+            els.mainBtn.disabled = false;
+            els.mainBtn.style.opacity = '1';
+            els.mainBtn.textContent = "🎲 EXPLORAR";
+            els.mainBtn.onclick = () => triggerStartAdventureRoulette();
             break;
 
         case 'ADVENTURE':
-        case 'GYM_BATTLE':
-            els.mainBtn.style.display = 'block';
+            const activePokemon = state.team[0];
+
+            if (activePokemon) {
+                showPokemon(activePokemon);
+            }
+
+            els.title.textContent = "🌍 Aventura";
+
+            // Show last event result
             if (state.lastEventResult) {
                 els.text.textContent = state.lastEventResult;
             } else {
-                els.text.textContent = "A aventura aguarda...";
+                els.text.textContent = "A aventura continua...";
             }
-            
-            if (state.phase === 'GYM_BATTLE') {
-                els.title.textContent = "⚔️ Batalha de Ginásio!";
-                els.mainBtn.textContent = "⚔️ LUTAR COM LÍDER";
-                els.mainBtn.onclick = () => sendAction('BATTLE_GYM');
-            } else {
-                els.title.textContent = "Aventura";
-                els.mainBtn.textContent = "🎲 CONTINUAR";
-                els.mainBtn.onclick = () => sendAction('SPIN_MAIN_ADVENTURE');
-            }
-            
-            // Show current active pokemon
-            if (state.team && state.team.length > 0) showPokemon(state.team[0]);
+
+            // Show team count and items
+            const teamInfo = `Time: ${state.team.length}/6`;
+            const potionItem = state.items.find(i => i.id === 'potion');
+            const potionCount = potionItem ? potionItem.count : 0;
+            const itemInfo = `Poções: ${potionCount}`;
+
+            els.round.textContent = `Round ${state.round}/8 | ${teamInfo} | ${itemInfo}`;
+
+            els.mainBtn.style.display = 'block';
+            els.mainBtn.disabled = false;
+            els.mainBtn.style.opacity = '1';
+            els.mainBtn.textContent = "🎲 CONTINUAR AVENTURA";
+            els.mainBtn.onclick = () => sendAction('SPIN_MAIN_ADVENTURE'); // TODO: Implement
             break;
             
         case 'EVOLUTION':
@@ -422,5 +451,267 @@ function showPokemon(pokemon) {
     els.sprite.src = pokeApiUrl;
 }
 
+/**
+ * Triggers the starter pokemon roulette
+ * Backend picks the result, frontend animates to it
+ */
+async function triggerStarterRoulette(generation) {
+    if (isAnimating) {
+        console.log('Starter roulette already in progress');
+        return;
+    }
+    
+    isAnimating = true;
+    
+    // Disable button immediately
+    els.mainBtn.disabled = true;
+    els.mainBtn.style.opacity = '0.5';
+    
+    // Get starters for current generation
+    const starters = startersByGen[generation] || startersByGen[1];
+    
+    // Setup roulette with actual starter names
+    const starterItems = starters.map(name => ({ label: name }));
+    setupRouletteUI(starterItems);
+    els.text.textContent = "🎲 Sorteando seu parceiro...";
+    
+    try {
+        // Call backend - it picks the starter and updates state
+        const res = await fetch(`${API_BASE}/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, action: 'SPIN_STARTER' })
+        });
+        
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(errorData.error || `Server error: ${res.status}`);
+        }
+        
+        const newState = await res.json();
+        
+        // Get the starter that was picked (should be first/only pokemon in team)
+        const pickedStarter = newState.team[newState.team.length - 1]; // Get the most recent one
+        
+        if (!pickedStarter) {
+            throw new Error('No starter received from server');
+        }
+        
+        const targetLabel = pickedStarter.name;
+        
+        // Verify target exists in roulette items (safety check)
+        const targetExists = starterItems.some(item => item.label === targetLabel);
+        if (!targetExists) {
+            console.warn(`Starter "${targetLabel}" not found in roulette, adding it`);
+            // Replace first item with the actual result
+            starterItems[0].label = targetLabel;
+            roulette.items = starterItems;
+            roulette.draw(0);
+        }
+        
+        // Animate roulette to the picked starter
+        roulette.spinTo(targetLabel, () => {
+            // Update text to show result
+            const shinyText = pickedStarter.shiny ? ' ✨SHINY✨' : '';
+            els.text.textContent = `🎉 ${pickedStarter.name}${shinyText}!`;
+            
+            // Brief pause to admire the result
+            setTimeout(() => {
+                isAnimating = false;
+                document.getElementById('roulette-canvas').style.display = 'none';
+                renderState(newState);
+            }, 1200);
+        });
+        
+    } catch (e) {
+        console.error('Error spinning starter:', e);
+        isAnimating = false;
+        
+        // Hide roulette and show error
+        document.getElementById('roulette-canvas').style.display = 'none';
+        els.mainBtn.disabled = false;
+        els.mainBtn.style.opacity = '1';
+        els.mainBtn.style.display = 'block';
+        els.text.textContent = `Erro: ${e.message}. Tente novamente.`;
+    }
+}
+
 // Start
 fetchGameState();
+
+/**
+ * Triggers the start adventure roulette animation.
+ * Backend determines result, frontend syncs animation.
+ */
+async function triggerStartAdventureRoulette() {
+    if (isAnimating) {
+        console.log('Adventure roulette already in progress');
+        return;
+    }
+
+    isAnimating = true;
+
+    els.mainBtn.disabled = true;
+    els.mainBtn.style.opacity = '0.5';
+
+    const rouletteItems = startAdventureEvents.map(e => ({ label: e.label }));
+    setupRouletteUI(rouletteItems);
+    els.text.textContent = "🎲 O que vai acontecer...";
+
+    try {
+        const res = await fetch(`${API_BASE}/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, action: 'SPIN_START_ADVENTURE' })
+        });
+
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(errorData.error || `Server error: ${res.status}`);
+        }
+
+        const newState = await res.json();
+
+        // Find matching label for backend event
+        const pickedEvent = newState.lastEvent;
+        const targetItem = startAdventureEvents.find(e => e.event === pickedEvent);
+
+        if (!targetItem) {
+            throw new Error(`Unknown event: ${pickedEvent}`);
+        }
+
+        const targetLabel = targetItem.label;
+
+        roulette.spinTo(targetLabel, () => {
+            els.text.textContent = newState.lastEventResult || "Algo aconteceu!";
+
+            setTimeout(() => {
+                isAnimating = false;
+                document.getElementById('roulette-canvas').style.display = 'none';
+                renderState(newState);
+            }, 1500);
+        });
+
+    } catch (e) {
+        console.error('Error in start adventure:', e);
+        isAnimating = false;
+
+        document.getElementById('roulette-canvas').style.display = 'none';
+        els.mainBtn.disabled = false;
+        els.mainBtn.style.opacity = '1';
+        els.mainBtn.style.display = 'block';
+        els.text.textContent = `Erro: ${e.message}. Tente novamente.`;
+    }
+}
+
+/**
+ * Triggers the generation roulette animation
+ * Safe to call multiple times - will only execute once per GEN_ROULETTE state
+ * @param {number} targetGeneration - Pre-determined generation from backend
+ */
+async function triggerGenRoulette(targetGeneration) {
+    // Guard: prevent any re-triggering
+    if (isAnimating || genRouletteInProgress) {
+        console.log('Gen roulette already in progress, ignoring click');
+        return;
+    }
+    
+    genRouletteInProgress = true;
+    isAnimating = true;
+    
+    // Disable all generation buttons immediately
+    document.querySelectorAll('#secondary-controls .game-btn').forEach(btn => {
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+    });
+    
+    // Setup roulette with all 8 generations
+    const genItems = [];
+    for (let i = 1; i <= 8; i++) {
+        genItems.push({ label: `Gen ${i}` });
+    }
+    
+    setupRouletteUI(genItems);
+    els.text.textContent = "🎰 Sorteando sua geração...";
+    
+    const targetLabel = `Gen ${targetGeneration}`;
+    
+    roulette.spinTo(targetLabel, async () => {
+        // Show result briefly before transitioning
+        els.text.textContent = `✨ Geração ${targetGeneration}!`;
+        
+        // Wait for user to see the result
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        
+        try {
+            // Call backend to advance state (idempotent - safe if called twice)
+            const res = await fetch(`${API_BASE}/action`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId, action: 'CONFIRM_GEN' })
+            });
+            
+            if (!res.ok) {
+                throw new Error(`Server error: ${res.status}`);
+            }
+            
+            const newState = await res.json();
+            
+            // Successfully transitioned - render new state
+            document.getElementById('roulette-canvas').style.display = 'none';
+            isAnimating = false;
+            genRouletteInProgress = false;
+            renderState(newState);
+            
+        } catch (e) {
+            console.error('Error confirming generation:', e);
+            
+            // Show error but keep the result visible
+            els.text.textContent = `✨ Geração ${targetGeneration}! (Erro ao salvar, tentando novamente...)`;
+            
+            // Retry after delay
+            setTimeout(async () => {
+                isAnimating = false;
+                genRouletteInProgress = false;
+                await fetchGameState(); // Re-fetch will show correct state
+            }, 2000);
+        }
+    });
+}
+
+/**
+ * Handles gender selection (not a roulette - direct choice)
+ * @param {'male' | 'female'} gender 
+ */
+async function selectGender(gender) {
+    if (isAnimating) return;
+    
+    // Disable buttons to prevent double-click
+    document.querySelectorAll('#secondary-controls .game-btn').forEach(btn => {
+        btn.disabled = true;
+    });
+    
+    els.text.textContent = "Salvando...";
+    
+    try {
+        const res = await fetch(`${API_BASE}/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, action: 'SELECT_GENDER', selection: gender })
+        });
+        
+        if (!res.ok) throw new Error('Failed to select gender');
+        
+        const newState = await res.json();
+        renderState(newState);
+        
+    } catch (e) {
+        console.error('Error selecting gender:', e);
+        els.text.textContent = "Erro ao salvar. Tente novamente.";
+        
+        // Re-enable buttons on error
+        document.querySelectorAll('#secondary-controls .game-btn').forEach(btn => {
+            btn.disabled = false;
+        });
+    }
+}

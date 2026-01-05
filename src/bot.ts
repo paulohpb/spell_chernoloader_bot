@@ -211,10 +211,63 @@ async function main() {
   
   // ... (Other Game API routes omitted for brevity, keeping legacy flow) ...
   app.post('/api/game/action', async (req, res) => {
-      // (Legacy logic kept as is for now)
-      const { userId } = req.body;
-      const s = await gameService.getSession(userId);
-      res.json(s); 
+    const { userId, action, selection } = req.body;
+    
+    if (!userId) {
+        return res.status(400).json({ error: 'Missing userId' });
+    }
+    
+    let session = await gameService.getSession(userId);
+    
+    try {
+        switch (action) {
+            case 'CONFIRM_GEN':
+                // Safe transition: only moves forward if in GEN_ROULETTE
+                // Calling twice does nothing (idempotent)
+                session = await gameService.confirmGeneration(userId);
+                break;
+                
+            case 'SELECT_GENDER':
+                // Validates selection and only works in GENDER_ROULETTE state
+                if (selection === 'male' || selection === 'female') {
+                    session = await gameService.selectGender(userId, selection);
+                }
+                break;
+                
+            case 'SPIN_STARTER':
+                await gameService.spinStarter(userId);
+                // Re-fetch to get updated session with new team member
+                session = await gameService.getSession(userId);
+                break;
+
+            case 'SPIN_START_ADVENTURE':
+                await gameService.spinStartAdventure(userId);
+                session = await gameService.getSession(userId);
+                break;
+                
+            case 'RESET':
+                session = await gameService.resetSession(userId);
+                break;
+                
+            // ... other existing cases
+        }
+        
+        res.json({
+            phase: session.state,
+            generation: session.generation,
+            gender: session.gender,
+            team: session.team,
+            badges: session.badges,
+            round: session.round,
+            items: session.items,
+            lastEventResult: session.lastEventResult,
+            lastEvent: session.lastEvent
+        });
+        
+    } catch (e) {
+        console.error('Action error:', e);
+        res.status(500).json({ error: 'Internal server error' });
+    }
   });
 
   // Start Server & Bot
