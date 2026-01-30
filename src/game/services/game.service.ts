@@ -7,6 +7,7 @@ import { PlayerSession, AdventureEvent, Pokemon } from '../types';
 import { pokemonService } from './pokemon.service';
 import { SessionRepository } from '../repository';
 import { JsonSessionRepository } from '../repositories/json-repository';
+import { getGymLeader } from '../data/gym-leaders';
 
 export class GameService {
   private repository: SessionRepository;
@@ -216,28 +217,31 @@ export class GameService {
 
     const event = this.spin(this.startAdventureWeights);
     session.lastEvent = event;
+    session.lastCapturedPokemon = undefined;
 
     switch (event) {
       case 'CATCH_POKEMON':
         session.lastEventResult = await this.processCatchPokemon(session);
-        session.state = 'ADVENTURE';
         break;
 
       case 'BATTLE_TRAINER':
         session.lastEventResult = this.processBattleTrainer(session);
-        session.state = 'ADVENTURE';
         break;
 
       case 'BUY_POTIONS':
         session.lastEventResult = this.processBuyPotions(session);
-        session.state = 'ADVENTURE';
         break;
 
       case 'NOTHING':
         session.lastEventResult = 'Nada aconteceu... Tente novamente!';
-        // Stay in START_ADVENTURE
-        break;
+        await this.repository.saveSession(session);
+        return; // Stay in START_ADVENTURE
     }
+
+    // After any successful event, transition to first gym battle
+    session.state = 'GYM_BATTLE';
+    const leader = getGymLeader(session.generation, session.badges);
+    session.lastEventResult += `\n\n🏟️ ${leader.name} está te esperando!`;
 
     await this.repository.saveSession(session);
   }
@@ -248,7 +252,6 @@ export class GameService {
    * @returns Result message
    */
   private async processCatchPokemon(session: PlayerSession): Promise<string> {
-    // Generate random Pokémon ID based on generation range
     const genRanges: Record<number, [number, number]> = {
       1: [1, 151],
       2: [152, 251],
@@ -268,13 +271,16 @@ export class GameService {
 
     if (pokemon && session.team.length < 6) {
       session.team.push(pokemon);
+      session.lastCapturedPokemon = pokemon;
       const shinyText = pokemon.shiny ? ' ✨SHINY✨' : '';
       return `Você capturou ${pokemon.name}${shinyText}!`;
     } else if (pokemon) {
       session.storage.push(pokemon);
+      session.lastCapturedPokemon = pokemon;
       return `Você capturou ${pokemon.name}! (Enviado ao PC)`;
     }
 
+    session.lastCapturedPokemon = undefined;
     return 'O Pokémon fugiu...';
   }
 
@@ -315,6 +321,197 @@ export class GameService {
     return 'Você comprou uma Poção na loja!';
   }
 
+  /**
+   * Spins the main adventure roulette (after START_ADVENTURE transitions to ADVENTURE).
+   * Uses the expanded event pool for mid-game exploration.
+   */
+  async spinMainAdventure(userId: number): Promise<void> {
+    const session = await this.repository.getSession(userId);
+
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    if (session.state !== 'ADVENTURE') {
+      throw new Error('Invalid state for main adventure');
+    }
+
+    const event = this.spin(this.mainAdventureWeights);
+    session.lastEvent = event;
+    session.lastCapturedPokemon = undefined;
+
+    switch (event) {
+      case 'CATCH_POKEMON':
+        session.lastEventResult = await this.processCatchPokemon(session);
+        break;
+
+      case 'CATCH_TWO':
+        const first = await this.processCatchPokemon(session);
+        const second = await this.processCatchPokemon(session);
+        session.lastEventResult = `Sorte dupla! ${first} ${second}`;
+        break;
+
+      case 'BATTLE_TRAINER':
+        session.lastEventResult = this.processBattleTrainer(session);
+        break;
+
+      case 'BUY_POTIONS':
+        session.lastEventResult = this.processBuyPotions(session);
+        break;
+
+      case 'NOTHING':
+        session.lastEventResult = 'Nada aconteceu... A jornada continua!';
+        break;
+
+      case 'FIND_ITEM': {
+        const potion = session.items.find(i => i.id === 'potion');
+        if (potion) potion.count += 2;
+        else session.items.push({ id: 'potion', name: 'Poção', description: 'Revive o time', count: 2 });
+        session.lastEventResult = 'Você encontrou 2 Poções escondidas!';
+        break;
+      }
+
+      case 'FISHING': {
+        session.lastEventResult = await this.processCatchPokemon(session);
+        session.lastEventResult = '🎣 ' + (session.lastEventResult || 'Você pescou algo!');
+        break;
+      }
+
+      case 'EXPLORE_CAVE': {
+        const caveResult = await this.processCatchPokemon(session);
+        session.lastEventResult = '🕳️ Explorando uma caverna... ' + caveResult;
+        break;
+      }
+
+      case 'RIVAL': {
+        const won = this.calculateBattleVictory(session);
+        session.lastEventResult = won
+          ? '⚔️ Seu Rival apareceu! Você venceu a batalha!'
+          : '⚔️ Seu Rival apareceu! Você perdeu, mas aprendeu com a derrota.';
+        break;
+      }
+
+      case 'TEAM_ROCKET': {
+        const defeated = this.calculateBattleVictory(session);
+        if (defeated) {
+          session.lastEventResult = '🚀 A Equipe Rocket apareceu! Você os derrotou!';
+          const potion = session.items.find(i => i.id === 'potion');
+          if (potion) potion.count++;
+          else session.items.push({ id: 'potion', name: 'Poção', description: 'Revive o time', count: 1 });
+        } else {
+          session.lastEventResult = '🚀 A Equipe Rocket apareceu e fugiu com um item!';
+          const potion = session.items.find(i => i.id === 'potion');
+          if (potion && potion.count > 0) potion.count--;
+        }
+        break;
+      }
+
+      case 'VISIT_DAYCARE':
+        session.lastEventResult = '🏠 Você visitou o Day Care! Seu time descansou.';
+        break;
+
+      case 'MYSTERIOUS_EGG': {
+        session.lastEventResult = await this.processCatchPokemon(session);
+        session.lastEventResult = '🥚 Um ovo misterioso chocou! ' + session.lastEventResult;
+        break;
+      }
+
+      case 'LEGENDARY': {
+        const legendaryRanges: Record<number, number[]> = {
+          1: [144, 145, 146, 150],
+          2: [243, 244, 245, 249, 250],
+          3: [377, 378, 379, 380, 381, 382, 383],
+          4: [480, 481, 482, 483, 484, 487],
+          5: [638, 639, 640, 641, 642, 643, 644],
+          6: [716, 717, 718],
+          7: [785, 786, 787, 788, 789, 791, 792],
+          8: [888, 889, 890, 891, 892]
+        };
+        const legends = legendaryRanges[session.generation] || legendaryRanges[1];
+        const legendId = legends[Math.floor(Math.random() * legends.length)];
+        const pokemon = await pokemonService.getPokemon(legendId, Math.random() < 0.005);
+        if (pokemon && session.team.length < 6) {
+          session.team.push(pokemon);
+          session.lastEventResult = `🌟 LENDÁRIO! Você capturou ${pokemon.name}!`;
+        } else if (pokemon) {
+          session.storage.push(pokemon);
+          session.lastEventResult = `🌟 LENDÁRIO! ${pokemon.name} capturado! (Enviado ao PC)`;
+        } else {
+          session.lastEventResult = '🌟 Um Pokémon lendário apareceu... mas fugiu!';
+        }
+        break;
+      }
+
+      case 'TRADE': {
+        if (session.team.length > 1) {
+          const tradeIdx = Math.floor(Math.random() * (session.team.length - 1)) + 1;
+          const traded = session.team[tradeIdx];
+          const newPokemon = await pokemonService.getRandomPokemon(session.generation);
+          if (newPokemon) {
+            session.team[tradeIdx] = newPokemon;
+            session.lastEventResult = `🔄 Você trocou ${traded.name} por ${newPokemon.name}!`;
+          } else {
+            session.lastEventResult = '🔄 A troca não deu certo...';
+          }
+        } else {
+          session.lastEventResult = '🔄 Ninguém quis trocar...';
+        }
+        break;
+      }
+
+      case 'SNORLAX': {
+        const potion = session.items.find(i => i.id === 'potion');
+        if (potion) potion.count++;
+        else session.items.push({ id: 'potion', name: 'Poção', description: 'Revive o time', count: 1 });
+        session.lastEventResult = '😴 Um Snorlax bloqueou o caminho! Após acordá-lo, você achou uma Poção.';
+        break;
+      }
+
+      case 'FOSSIL': {
+        const fossilPokemon: Record<number, number[]> = {
+          1: [138, 140], 2: [138, 140], 3: [345, 347],
+          4: [408, 410], 5: [564, 566], 6: [696, 698],
+          7: [696, 698], 8: [880, 881, 882, 883]
+        };
+        const fossils = fossilPokemon[session.generation] || fossilPokemon[1];
+        const fossilId = fossils[Math.floor(Math.random() * fossils.length)];
+        const pokemon = await pokemonService.getPokemon(fossilId, Math.random() < 0.01);
+        if (pokemon && session.team.length < 6) {
+          session.team.push(pokemon);
+          session.lastEventResult = `🦴 Você restaurou um fóssil! ${pokemon.name} se juntou ao time!`;
+        } else if (pokemon) {
+          session.storage.push(pokemon);
+          session.lastEventResult = `🦴 Fóssil restaurado! ${pokemon.name} enviado ao PC.`;
+        } else {
+          session.lastEventResult = '🦴 Você encontrou um fóssil, mas não conseguiu restaurá-lo.';
+        }
+        break;
+      }
+
+      case 'MULTITASK': {
+        session.lastEventResult = this.processBuyPotions(session);
+        const catchResult = await this.processCatchPokemon(session);
+        session.lastEventResult += ` E também: ${catchResult}`;
+        break;
+      }
+
+      default:
+        session.lastEventResult = 'Algo estranho aconteceu...';
+        break;
+    }
+
+    // Advance round after certain number of events
+    session.round++;
+
+    // Gym battle every 2 adventure rounds (at round 2, 4, 6, 8, 10, 12, 14, 16)
+    if (session.round % 2 === 0 && session.badges < 8) {
+      session.state = 'GYM_BATTLE';
+      session.lastEventResult += '\n\n🏟️ Um Líder de Ginásio apareceu!';
+    }
+
+    await this.repository.saveSession(session);
+  }
+
   /** Calculates battle victory based on team power vs round difficulty. */
   calculateBattleVictory(session: PlayerSession): boolean {
     const teamPower = session.team.reduce((acc, p) => acc + p.power, 0);
@@ -332,6 +529,77 @@ export class GameService {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Handles gym battle logic. Player fights current gym leader.
+   * Win = badge + check evolution. Lose = use potion or game over.
+   */
+  async fightGym(userId: number): Promise<void> {
+    const session = await this.repository.getSession(userId);
+    if (!session) throw new Error('Session not found');
+    if (session.state !== 'GYM_BATTLE') throw new Error('Invalid state for gym fight');
+
+    const won = this.calculateBattleVictory(session);
+
+    if (won) {
+      session.badges++;
+      session.lastEventResult = `🏅 Você derrotou o Líder do Ginásio ${session.badges}! Insígnia conquistada!`;
+
+      if (session.badges >= 8) {
+        session.state = 'VICTORY';
+      } else {
+        session.state = 'EVOLUTION';
+      }
+    } else {
+      // Try to use a potion
+      if (this.usePotion(session)) {
+        session.lastEventResult = '💊 Você perdeu a batalha, mas usou uma Poção! Tente novamente.';
+        // Stay in GYM_BATTLE for retry
+      } else {
+        session.state = 'GAME_OVER';
+        session.lastEventResult = '☠️ Seus Pokémon foram derrotados e você ficou sem Poções...';
+      }
+    }
+
+    await this.repository.saveSession(session);
+  }
+
+  /**
+   * Checks and processes team evolutions after gym victory.
+   * Returns player to ADVENTURE phase.
+   */
+  async checkEvolution(userId: number): Promise<void> {
+    const session = await this.repository.getSession(userId);
+    if (!session) throw new Error('Session not found');
+    if (session.state !== 'EVOLUTION') throw new Error('Invalid state for evolution');
+
+    let evolvedAny = false;
+    const evolutionMessages: string[] = [];
+
+    for (let i = 0; i < session.team.length; i++) {
+      const pokemon = session.team[i];
+      if (pokemonService.canEvolve(pokemon.id)) {
+        // 50% chance to evolve after each badge
+        if (Math.random() < 0.5) {
+          const evolved = await pokemonService.evolve(pokemon);
+          if (evolved) {
+            evolutionMessages.push(`${pokemon.name} evoluiu para ${evolved.name}!`);
+            session.team[i] = evolved;
+            evolvedAny = true;
+          }
+        }
+      }
+    }
+
+    if (evolvedAny) {
+      session.lastEventResult = '🧬 ' + evolutionMessages.join(' ');
+    } else {
+      session.lastEventResult = 'Nenhum Pokémon evoluiu desta vez. A aventura continua!';
+    }
+
+    session.state = 'ADVENTURE';
+    await this.repository.saveSession(session);
   }
 }
 

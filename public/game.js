@@ -37,6 +37,23 @@ const startersByGen = {
 };
 
 /**
+ * Trainer sprite URLs by generation and gender.
+ * Uses Pokémon Showdown trainer sprites (protagonist characters per generation).
+ * URL pattern: https://play.pokemonshowdown.com/sprites/trainers/{name}.png
+ */
+const TRAINER_SPRITE_BASE = 'https://play.pokemonshowdown.com/sprites/trainers';
+const trainerSprites = {
+    1: { male: `${TRAINER_SPRITE_BASE}/red.png`,     female: `${TRAINER_SPRITE_BASE}/leaf.png` },
+    2: { male: `${TRAINER_SPRITE_BASE}/ethan.png`,   female: `${TRAINER_SPRITE_BASE}/lyra.png` },
+    3: { male: `${TRAINER_SPRITE_BASE}/brendan.png`, female: `${TRAINER_SPRITE_BASE}/may.png` },
+    4: { male: `${TRAINER_SPRITE_BASE}/lucas.png`,   female: `${TRAINER_SPRITE_BASE}/dawn.png` },
+    5: { male: `${TRAINER_SPRITE_BASE}/hilbert.png`, female: `${TRAINER_SPRITE_BASE}/hilda.png` },
+    6: { male: `${TRAINER_SPRITE_BASE}/calem.png`,   female: `${TRAINER_SPRITE_BASE}/serena.png` },
+    7: { male: `${TRAINER_SPRITE_BASE}/elio.png`,    female: `${TRAINER_SPRITE_BASE}/selene.png` },
+    8: { male: `${TRAINER_SPRITE_BASE}/victor.png`,  female: `${TRAINER_SPRITE_BASE}/gloria.png` }
+};
+
+/**
  * Start adventure events - labels in Portuguese
  * Must match backend startAdventureWeights events
  */
@@ -45,6 +62,30 @@ const startAdventureEvents = [
     { event: 'BATTLE_TRAINER', label: 'Treinador' },
     { event: 'BUY_POTIONS', label: 'Loja' },
     { event: 'NOTHING', label: 'Nada' }
+];
+
+/**
+ * Main adventure events - labels in Portuguese
+ * Must match backend mainAdventureWeights events (display subset for the roulette wheel)
+ */
+const mainAdventureEvents = [
+    { event: 'CATCH_POKEMON', label: 'Pokémon!' },
+    { event: 'BATTLE_TRAINER', label: 'Batalha' },
+    { event: 'BUY_POTIONS', label: 'Loja' },
+    { event: 'NOTHING', label: 'Nada' },
+    { event: 'CATCH_TWO', label: 'Dupla!' },
+    { event: 'FIND_ITEM', label: 'Item' },
+    { event: 'TEAM_ROCKET', label: 'Rocket!' },
+    { event: 'LEGENDARY', label: 'Lendário!' },
+    { event: 'TRADE', label: 'Troca' },
+    { event: 'RIVAL', label: 'Rival!' },
+    { event: 'FISHING', label: 'Pesca' },
+    { event: 'FOSSIL', label: 'Fóssil' },
+    { event: 'EXPLORE_CAVE', label: 'Caverna' },
+    { event: 'VISIT_DAYCARE', label: 'Day Care' },
+    { event: 'SNORLAX', label: 'Snorlax!' },
+    { event: 'MYSTERIOUS_EGG', label: 'Ovo!' },
+    { event: 'MULTITASK', label: 'Multitarefa' }
 ];
 
 if (els.playerName) els.playerName.textContent = user.first_name;
@@ -94,10 +135,11 @@ class Roulette {
             this.ctx.rotate(startAngle + arcSize / 2);
             this.ctx.textAlign = "right";
             this.ctx.fillStyle = "#fff";
-            this.ctx.font = "bold 14px Arial";
+            const fontSize = this.items.length > 8 ? 10 : 14;
+            this.ctx.font = `bold ${fontSize}px Arial`;
             this.ctx.shadowColor = "black";
             this.ctx.shadowBlur = 2;
-            this.ctx.fillText(item.label, this.radius - 20, 5);
+            this.ctx.fillText(item.label, this.radius - 15, 4);
             this.ctx.restore();
 
             startAngle = endAngle;
@@ -122,29 +164,29 @@ class Roulette {
         const winningIndex = this.items.findIndex(i => i.label === targetLabel);
         if (winningIndex === -1) {
             console.error("Item alvo não encontrado na roleta:", targetLabel);
+            this.spinning = false;
             onComplete();
             return;
         }
 
-        const totalWeight = this.items.length;
-        const arcSize = (2 * Math.PI) / totalWeight;
+        const totalSlices = this.items.length;
+        const arcSize = (2 * Math.PI) / totalSlices;
         
-        // Calcula onde a roleta deve parar para o ponteiro (que está na direita/0 graus) apontar para o item
-        // No canvas, 0 radianos é as 3 horas (direita).
-        const winningAngleStart = winningIndex * arcSize;
+        // The pointer is at 0 radians (right side / 3 o'clock).
+        // Slices are drawn starting at angle `rotation`. Slice i spans:
+        //   [rotation + i*arcSize, rotation + (i+1)*arcSize]
+        // For the pointer (at 0) to point inside slice winningIndex:
+        //   rotation + winningIndex*arcSize < 0 < rotation + (winningIndex+1)*arcSize
+        // Center of winning slice at pointer: rotation = -(winningIndex*arcSize + arcSize/2)
+        // Add random offset within the slice for natural feel:
+        const randomOffset = (Math.random() - 0.5) * arcSize * 0.6; // ±30% of slice
+        const sliceCenter = winningIndex * arcSize + arcSize / 2;
         
-        // Lógica de rotação final: 
-        // Queremos que o winningIndex esteja na posição 0 (direita) no final.
-        // Adicionamos algumas voltas completas (5 voltas = 10 * PI)
-        // Subtraímos o ângulo do item para trazê-lo para o zero.
-        const totalRotations = 5; 
-        const randomOffset = Math.random() * (arcSize * 0.8) + (arcSize * 0.1); // Aleatoriedade dentro da fatia
-        
-        // Fórmula mágica do wheel.component.ts adaptada
-        // O item está em `winningAngleStart`. Para ele ir para 0, precisamos girar `-winningAngleStart`.
-        const targetRotation = (totalRotations * 2 * Math.PI) - winningAngleStart - (arcSize/2); 
+        // Total rotation = full spins + offset to land on winning slice
+        const totalRotations = 4 + Math.floor(Math.random() * 3); // 4-6 full spins
+        const targetRotation = (totalRotations * 2 * Math.PI) - sliceCenter + randomOffset;
 
-        const duration = 4000; // 4 segundos
+        const duration = 3500 + Math.random() * 1000; // 3.5-4.5 seconds
         const startTime = performance.now();
 
         const animate = (currentTime) => {
@@ -247,33 +289,86 @@ function setupRouletteUI(items) {
     roulette.draw(0);
 }
 
-// Função auxiliar para "adivinhar" o que a API escolheu para a roleta parar visualmente
-function decideTargetLabel(action, state, items) {
-    // Tenta encontrar algo nos itens que combine com o resultado
-    // Como a API retorna o "Próximo Estado" e não exatamente "Você tirou X", 
-    // precisamos inferir ou pegar o nome do Pokémon
-    
-    if (action === 'SPIN_STARTER') {
-        const newPokemon = state.team[state.team.length - 1]; // O último pkm adicionado
-        // Hack visual: substitui um dos itens da roleta pelo nome do pokemon que ganhamos
-        // para garantir que a roleta pare no nome certo
-        items[0].label = newPokemon.name; 
-        return newPokemon.name;
-    }
-    
-    if (action === 'SPIN_START_ADVENTURE' || action === 'SPIN_MAIN_ADVENTURE') {
-        // Se mudou para GYM_BATTLE, foi batalha
-        if (state.phase === 'GYM_BATTLE') return 'Batalha';
-        // Se ganhou item, retorna Item, etc...
-        // Para simplificar, vamos fazer o mesmo hack:
-        // O backend deve mandar `lastEventResult` tipo "Você encontrou um Pidgey!"
-        // Vamos forçar o item 0 a ser o resultado
-        const resume = state.lastEventResult ? state.lastEventResult.split(' ')[0] + '...' : 'Sorte!';
-        items[0].label = "Sorte!"; // Texto genérico ou extraído
-        return "Sorte!";
+/**
+ * Catch-type events where a new Pokémon is obtained.
+ * Used to determine whether to show capture result screen.
+ */
+const CATCH_EVENTS = ['CATCH_POKEMON', 'CATCH_TWO', 'FISHING', 'EXPLORE_CAVE', 'MYSTERIOUS_EGG', 'FOSSIL', 'LEGENDARY', 'TRADE', 'MULTITASK'];
+
+/**
+ * Shows an intermediate event result screen after roulette completes.
+ * Displays captured Pokémon sprite, event text, and a "Continue" button.
+ * This replaces the old auto-timeout approach, giving players time to read results.
+ * 
+ * @param {object} newState - The state returned from the backend after the event
+ * @param {string} eventLabel - The roulette label that was selected (for non-catch display)
+ */
+function showEventResult(newState, eventLabel) {
+    // Hide roulette canvas
+    document.getElementById('roulette-canvas').style.display = 'none';
+
+    // Clear secondary controls
+    els.secControls.innerHTML = '';
+
+    const isCatchEvent = CATCH_EVENTS.includes(newState.lastEvent);
+    const hasCapturedPokemon = newState.lastCapturedPokemon && isCatchEvent;
+
+    if (hasCapturedPokemon) {
+        // Show the newly captured Pokémon
+        showPokemon(newState.lastCapturedPokemon);
+        const shinyTag = newState.lastCapturedPokemon.shiny ? ' ✨' : '';
+        els.title.textContent = `🎉 ${newState.lastCapturedPokemon.name}${shinyTag}`;
+    } else {
+        // Non-catch event: show relevant title
+        els.sprite.style.display = 'none';
+        els.title.textContent = getEventIcon(newState.lastEvent) + ' ' + eventLabel;
     }
 
-    return items[0].label; // Fallback
+    // Show event result text
+    els.text.textContent = newState.lastEventResult || "Algo aconteceu!";
+
+    // Show team info
+    const teamCount = newState.team ? newState.team.length : 0;
+    const potionItem = newState.items ? newState.items.find(i => i.id === 'potion') : null;
+    const potionCount = potionItem ? potionItem.count : 0;
+    els.round.textContent = `Time: ${teamCount}/6 | Poções: ${potionCount}`;
+
+    // "Continue" button to proceed to next phase
+    els.mainBtn.style.display = 'block';
+    els.mainBtn.disabled = false;
+    els.mainBtn.style.opacity = '1';
+    els.mainBtn.textContent = '▶️ Continuar';
+    els.mainBtn.onclick = () => {
+        isAnimating = false;
+        renderState(newState);
+    };
+
+    // Team viewer button alongside Continue
+    if (teamCount > 0) {
+        els.secControls.style.display = 'flex';
+        els.secControls.style.justifyContent = 'center';
+        const teamBtn = document.createElement('button');
+        teamBtn.className = 'game-btn';
+        teamBtn.textContent = `👥 Ver Time (${teamCount}/6)`;
+        teamBtn.style.cssText = 'padding:8px 16px;font-size:12px;';
+        teamBtn.onclick = () => showTeamViewer(newState.team);
+        els.secControls.appendChild(teamBtn);
+    }
+}
+
+/**
+ * Returns an appropriate emoji icon for a given adventure event type.
+ */
+function getEventIcon(event) {
+    const icons = {
+        'CATCH_POKEMON': '🔴', 'CATCH_TWO': '🔴🔴', 'BATTLE_TRAINER': '⚔️',
+        'BUY_POTIONS': '🏪', 'NOTHING': '🤷', 'FIND_ITEM': '🎒',
+        'TEAM_ROCKET': '🚀', 'LEGENDARY': '🌟', 'TRADE': '🔄',
+        'RIVAL': '⚔️', 'FISHING': '🎣', 'FOSSIL': '🦴',
+        'EXPLORE_CAVE': '🕳️', 'VISIT_DAYCARE': '🏠', 'SNORLAX': '😴',
+        'MYSTERIOUS_EGG': '🥚', 'MULTITASK': '🎯'
+    };
+    return icons[event] || '❓';
 }
 
 function renderState(state) {
@@ -294,23 +389,13 @@ function renderState(state) {
 
     switch (state.phase) {
         case 'GEN_ROULETTE':
-            els.title.textContent = "🎰 Sorteio de Geração";
-            els.text.textContent = "Toque em qualquer botão para descobrir sua geração!";
-            els.secControls.style.display = 'flex';
-            els.secControls.style.flexWrap = 'wrap';
-            els.secControls.style.justifyContent = 'center';
-            els.secControls.style.gap = '8px';
-            
-            for (let i = 1; i <= 8; i++) {
-                const btn = document.createElement('button');
-                btn.className = 'game-btn small';
-                btn.style.width = '45px';
-                btn.textContent = i;
-                // ALL buttons trigger spin to the PRE-DETERMINED generation
-                // state.generation was already set by backend's spinGen()
-                btn.onclick = () => triggerGenRoulette(state.generation);
-                els.secControls.appendChild(btn);
-            }
+            els.title.textContent = "🎰 Chernomon Roulette";
+            els.text.textContent = "Sua geração será sorteada aleatoriamente!";
+            els.mainBtn.style.display = 'block';
+            els.mainBtn.disabled = false;
+            els.mainBtn.style.opacity = '1';
+            els.mainBtn.textContent = "🚀 START ADVENTURE";
+            els.mainBtn.onclick = () => triggerGenRoulette(state.generation);
             break;
 
         case 'GENDER_ROULETTE':
@@ -320,16 +405,18 @@ function renderState(state) {
             els.secControls.style.gap = '12px';
             els.secControls.style.justifyContent = 'center';
             
+            const genSprites = trainerSprites[state.generation] || trainerSprites[1];
+            
             const btnBoy = document.createElement('button');
-            btnBoy.className = 'game-btn';
-            btnBoy.innerHTML = '👦<br>Menino';
-            btnBoy.style.padding = '15px 25px';
+            btnBoy.className = 'game-btn gender-btn';
+            btnBoy.innerHTML = `<img src="${genSprites.male}" alt="Boy" class="trainer-preview"><br>Menino`;
+            btnBoy.style.padding = '10px 20px';
             btnBoy.onclick = () => selectGender('male');
             
             const btnGirl = document.createElement('button');
-            btnGirl.className = 'game-btn';
-            btnGirl.innerHTML = '👧<br>Menina';
-            btnGirl.style.padding = '15px 25px';
+            btnGirl.className = 'game-btn gender-btn';
+            btnGirl.innerHTML = `<img src="${genSprites.female}" alt="Girl" class="trainer-preview"><br>Menina`;
+            btnGirl.style.padding = '10px 20px';
             btnGirl.onclick = () => selectGender('female');
 
             els.secControls.appendChild(btnBoy);
@@ -340,6 +427,7 @@ function renderState(state) {
             els.title.textContent = "🎲 Seu Primeiro Parceiro";
             const genderLabel = state.gender === 'male' ? 'um Treinador' : 'uma Treinadora';
             els.text.textContent = `Você é ${genderLabel} da Geração ${state.generation}! Hora de conhecer seu Pokémon inicial.`;
+            showTrainer(state.generation, state.gender);
             els.mainBtn.style.display = 'block';
             els.mainBtn.disabled = false;
             els.mainBtn.style.opacity = '1';
@@ -357,21 +445,24 @@ function renderState(state) {
                 break;
             }
 
-            showPokemon(starterPokemon);
+            // Show last captured pokemon if available, otherwise show starter
+            if (state.lastCapturedPokemon) {
+                showPokemon(state.lastCapturedPokemon);
+            } else {
+                showPokemon(starterPokemon);
+            }
 
             // First time in START_ADVENTURE or after NOTHING event
             if (state.lastEvent === 'NOTHING') {
                 els.title.textContent = "🤷 Nada aconteceu...";
                 els.text.textContent = state.lastEventResult;
             } else if (!state.lastEvent) {
-                // First time - just got starter
                 const shinyPrefix = starterPokemon.shiny ? '✨ ' : '';
                 const shinySuffix = starterPokemon.shiny ? ' ✨' : '';
                 els.title.textContent = `${shinyPrefix}${starterPokemon.name}${shinySuffix}`;
                 els.text.textContent = "Sua jornada começa agora! O que fará primeiro?";
             } else {
-                // Returning from other state (shouldn't happen normally)
-                els.title.textContent = `${starterPokemon.name}`;
+                els.title.textContent = state.lastCapturedPokemon ? state.lastCapturedPokemon.name : starterPokemon.name;
                 els.text.textContent = state.lastEventResult || "Continue sua aventura!";
             }
 
@@ -380,37 +471,89 @@ function renderState(state) {
             els.mainBtn.style.opacity = '1';
             els.mainBtn.textContent = "🎲 EXPLORAR";
             els.mainBtn.onclick = () => triggerStartAdventureRoulette();
+
+            // Team viewer always available
+            if (state.team.length > 0) {
+                els.secControls.style.display = 'flex';
+                els.secControls.style.justifyContent = 'center';
+                const startTeamBtn = document.createElement('button');
+                startTeamBtn.className = 'game-btn';
+                startTeamBtn.textContent = `👥 Ver Time (${state.team.length}/6)`;
+                startTeamBtn.style.padding = '8px 16px';
+                startTeamBtn.style.fontSize = '12px';
+                startTeamBtn.onclick = () => showTeamViewer(state.team);
+                els.secControls.appendChild(startTeamBtn);
+            }
             break;
 
         case 'ADVENTURE':
-            const activePokemon = state.team[0];
-
-            if (activePokemon) {
-                showPokemon(activePokemon);
+            // Show the last captured pokemon if catch event, otherwise first team pokemon
+            if (state.lastCapturedPokemon && CATCH_EVENTS.includes(state.lastEvent)) {
+                showPokemon(state.lastCapturedPokemon);
+            } else if (state.team && state.team.length > 0) {
+                showPokemon(state.team[0]);
             }
 
             els.title.textContent = "🌍 Aventura";
 
-            // Show last event result
             if (state.lastEventResult) {
                 els.text.textContent = state.lastEventResult;
             } else {
                 els.text.textContent = "A aventura continua...";
             }
 
-            // Show team count and items
+            // Show team count and items in header
             const teamInfo = `Time: ${state.team.length}/6`;
             const potionItem = state.items.find(i => i.id === 'potion');
             const potionCount = potionItem ? potionItem.count : 0;
             const itemInfo = `Poções: ${potionCount}`;
-
             els.round.textContent = `Round ${state.round}/8 | ${teamInfo} | ${itemInfo}`;
 
             els.mainBtn.style.display = 'block';
             els.mainBtn.disabled = false;
             els.mainBtn.style.opacity = '1';
             els.mainBtn.textContent = "🎲 CONTINUAR AVENTURA";
-            els.mainBtn.onclick = () => sendAction('SPIN_MAIN_ADVENTURE'); // TODO: Implement
+            els.mainBtn.onclick = () => triggerMainAdventureRoulette();
+
+            // Team viewer button
+            els.secControls.style.display = 'flex';
+            els.secControls.style.justifyContent = 'center';
+            const teamBtn = document.createElement('button');
+            teamBtn.className = 'game-btn';
+            teamBtn.textContent = `👥 Ver Time (${state.team.length}/6)`;
+            teamBtn.style.padding = '8px 16px';
+            teamBtn.style.fontSize = '12px';
+            teamBtn.onclick = () => showTeamViewer(state.team);
+            els.secControls.appendChild(teamBtn);
+            break;
+
+        case 'GYM_BATTLE':
+            if (state.gymLeader) {
+                els.sprite.style.display = 'block';
+                els.sprite.src = state.gymLeader.sprite;
+                els.title.textContent = `🏟️ ${state.gymLeader.name}`;
+                els.text.textContent = `"${state.gymLeader.quote}"\n\nTipo: ${state.gymLeader.type} | ${state.gymLeader.badge}`;
+            } else {
+                els.title.textContent = "🏟️ Batalha de Ginásio!";
+                els.text.textContent = state.lastEventResult || `Líder do Ginásio ${state.badges + 1} apareceu!`;
+                if (state.team[0]) showPokemon(state.team[0]);
+            }
+            els.mainBtn.style.display = 'block';
+            els.mainBtn.disabled = false;
+            els.mainBtn.style.opacity = '1';
+            els.mainBtn.textContent = "⚔️ BATALHAR!";
+            els.mainBtn.onclick = () => sendAction('GYM_FIGHT');
+
+            // Team viewer in gym
+            els.secControls.style.display = 'flex';
+            els.secControls.style.justifyContent = 'center';
+            const gymTeamBtn = document.createElement('button');
+            gymTeamBtn.className = 'game-btn';
+            gymTeamBtn.textContent = `👥 Ver Time (${state.team.length}/6)`;
+            gymTeamBtn.style.padding = '8px 16px';
+            gymTeamBtn.style.fontSize = '12px';
+            gymTeamBtn.onclick = () => showTeamViewer(state.team);
+            els.secControls.appendChild(gymTeamBtn);
             break;
             
         case 'EVOLUTION':
@@ -442,13 +585,78 @@ function renderState(state) {
 
 function showPokemon(pokemon) {
     els.sprite.style.display = 'block';
-    const shinyStr = pokemon.shiny ? 'shiny/' : '';
-    const name = pokemon.name.toLowerCase().replace(/ /g, '-').replace(/[^a-z0-9-]/g, ''); 
-    
-    // Tenta carregar do PokeAPI primeiro que é mais estável
     const pokeApiUrl = `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${pokemon.shiny?'shiny/':''}${pokemon.id}.png`;
-    
     els.sprite.src = pokeApiUrl;
+}
+
+function showTrainer(generation, gender) {
+    const genSprites = trainerSprites[generation] || trainerSprites[1];
+    const spriteUrl = gender === 'female' ? genSprites.female : genSprites.male;
+    els.sprite.style.display = 'block';
+    els.sprite.src = spriteUrl;
+}
+
+/**
+ * Shows a modal overlay with the player's current team.
+ * Displays each Pokémon sprite, name, and power.
+ */
+function showTeamViewer(team) {
+    // Remove existing overlay if present
+    const existing = document.getElementById('team-viewer-overlay');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'team-viewer-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
+
+    const title = document.createElement('h2');
+    title.textContent = '👥 Seu Time';
+    title.style.cssText = 'color:#fff;margin-bottom:16px;font-size:18px;';
+    overlay.appendChild(title);
+
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:12px;max-width:320px;width:100%;';
+
+    team.forEach((pokemon, idx) => {
+        const card = document.createElement('div');
+        card.style.cssText = 'background:rgba(255,255,255,0.1);border-radius:10px;padding:8px;text-align:center;border:1px solid rgba(255,255,255,0.2);';
+
+        const img = document.createElement('img');
+        const spriteUrl = `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${pokemon.shiny ? 'shiny/' : ''}${pokemon.id}.png`;
+        img.src = spriteUrl;
+        img.style.cssText = 'width:56px;height:56px;image-rendering:pixelated;';
+        img.alt = pokemon.name;
+
+        const name = document.createElement('div');
+        const shinyIcon = pokemon.shiny ? '✨' : '';
+        name.textContent = `${shinyIcon}${pokemon.name}`;
+        name.style.cssText = 'color:#fff;font-size:11px;font-weight:bold;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+
+        const power = document.createElement('div');
+        power.textContent = '⭐'.repeat(pokemon.power);
+        power.style.cssText = 'font-size:9px;margin-top:2px;';
+
+        card.appendChild(img);
+        card.appendChild(name);
+        card.appendChild(power);
+        grid.appendChild(card);
+    });
+
+    overlay.appendChild(grid);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕ Fechar';
+    closeBtn.className = 'game-btn';
+    closeBtn.style.cssText = 'margin-top:16px;padding:8px 24px;font-size:14px;';
+    closeBtn.onclick = () => overlay.remove();
+    overlay.appendChild(closeBtn);
+
+    // Close on overlay background click
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) overlay.remove();
+    });
+
+    document.body.appendChild(overlay);
 }
 
 /**
@@ -583,17 +791,60 @@ async function triggerStartAdventureRoulette() {
         const targetLabel = targetItem.label;
 
         roulette.spinTo(targetLabel, () => {
-            els.text.textContent = newState.lastEventResult || "Algo aconteceu!";
-
-            setTimeout(() => {
-                isAnimating = false;
-                document.getElementById('roulette-canvas').style.display = 'none';
-                renderState(newState);
-            }, 1500);
+            showEventResult(newState, targetItem.label);
         });
 
     } catch (e) {
         console.error('Error in start adventure:', e);
+        isAnimating = false;
+
+        document.getElementById('roulette-canvas').style.display = 'none';
+        els.mainBtn.disabled = false;
+        els.mainBtn.style.opacity = '1';
+        els.mainBtn.style.display = 'block';
+        els.text.textContent = `Erro: ${e.message}. Tente novamente.`;
+    }
+}
+
+/**
+ * Triggers the main adventure roulette animation (ADVENTURE phase).
+ * Backend determines result, frontend syncs animation.
+ */
+async function triggerMainAdventureRoulette() {
+    if (isAnimating) return;
+    isAnimating = true;
+
+    els.mainBtn.disabled = true;
+    els.mainBtn.style.opacity = '0.5';
+
+    const rouletteItems = mainAdventureEvents.map(e => ({ label: e.label }));
+    setupRouletteUI(rouletteItems);
+    els.text.textContent = "🎲 O que vai acontecer...";
+
+    try {
+        const res = await fetch(`${API_BASE}/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, action: 'SPIN_MAIN_ADVENTURE' })
+        });
+
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(errorData.error || `Server error: ${res.status}`);
+        }
+
+        const newState = await res.json();
+
+        const pickedEvent = newState.lastEvent;
+        const targetItem = mainAdventureEvents.find(e => e.event === pickedEvent);
+        const targetLabel = targetItem ? targetItem.label : mainAdventureEvents[0].label;
+
+        roulette.spinTo(targetLabel, () => {
+            showEventResult(newState, targetLabel);
+        });
+
+    } catch (e) {
+        console.error('Error in main adventure:', e);
         isAnimating = false;
 
         document.getElementById('roulette-canvas').style.display = 'none';

@@ -15,3 +15,6 @@ export type { DuylhouHandler, DuylhouHandlerConfig } from './duylhou';
 
 export { createLeaderboardHandler, LEADERBOARD_ERROR_CODES } from './leaderboard';
 export type { LeaderboardHandler, LeaderboardHandlerConfig } from './leaderboard';
+
+export { createSummaryHandler } from './summary';
+export type { SummaryHandler, SummaryHandlerConfig } from './summary';

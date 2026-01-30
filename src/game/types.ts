@@ -24,6 +24,14 @@ export interface Item {
   count: number;
 }
 
+export interface GymLeader {
+  name: string;
+  sprite: string;
+  quote: string;
+  type: string;
+  badge: string;
+}
+
 export interface PlayerSession {
   userId: number;
   state: GameState;
@@ -35,8 +43,9 @@ export interface PlayerSession {
   items: Item[];
   badges: number;
   gymRetriesLeft: number;
-  lastEventResult?: string; // Texto do resultado
-  lastEvent?: AdventureEvent; // O tipo de evento (ex: CATCH_POKEMON) para a animação
+  lastEventResult?: string;
+  lastEvent?: AdventureEvent;
+  lastCapturedPokemon?: Pokemon; // Track last captured for UI display
 }
 
 export type AdventureEvent = 

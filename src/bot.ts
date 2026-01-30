@@ -2,12 +2,10 @@
  * =============================================================================
  * ARQUIVO: src/bot.ts
  * Main Application Entry Point
- * 
- * Refactored to use modular architecture:
- * - Centralized Configuration
- * - Factory-based Services (Database, AI, Context, Media, Game)
- * - Middleware (Rate Limiter)
- * - Functional Error Handling
+ *
+ * Refactored: AI assistant is now command-based only.
+ * The bot no longer engages in freeform conversation.
+ * Available AI commands: /summary
  * =============================================================================
  */
 
@@ -24,16 +22,16 @@ import { formatError } from './assistant/errors';
 // --- Services ---
 import { createDatabase } from './database';
 import { createGeminiService } from './assistant/services/gemini.service';
-import { createContextService } from './assistant/context';
-import { gameService } from './game/services/game.service'; // Legacy service (to be refactored later)
-import { todoService } from './services/todo.service'; // Legacy service
+import { gameService } from './game/services/game.service';
+import { getGymLeader } from './game/data/gym-leaders';
+import { todoService } from './services/todo.service';
 
 // --- Handlers & Middleware ---
 import { createMediaHandler } from './bot/handlers/media';
 import { createLeaderboardHandler } from './bot/handlers/leaderboard';
 import { createRateLimiter } from './bot/middleware/rate-limiter';
-import { createDuylhouHandler } from './bot/handlers/duylhou'; 
-import { createAIHandler } from './bot/handlers/ai';
+import { createDuylhouHandler } from './bot/handlers/duylhou';
+import { createSummaryHandler } from './bot/handlers/summary';
 
 // --- Main Application Logic ---
 
@@ -48,12 +46,12 @@ async function main() {
   // 2. Initialize Database
   const [dbError, db] = createDatabase({
     dataDir: path.join(__dirname, '../data'),
-    persistIntervalMs: 5 * 60 * 1000, // 5 minutes
-    linkExpiryMs: 24 * 60 * 60 * 1000, // 24 hours
-    conversationMaxMessages: 20, // Keep last 20 messages per user
-    leaderboardRetentionDays: 30, // Keep rankings for 30 days
-    sessionMaxAgeDays: 90, // Keep sessions for 90 days
-    cleanupIntervalMs: 60 * 60 * 1000, // Run cleanup every hour
+    persistIntervalMs: 5 * 60 * 1000,
+    linkExpiryMs: 24 * 60 * 60 * 1000,
+    conversationMaxMessages: 20,
+    leaderboardRetentionDays: 30,
+    sessionMaxAgeDays: 90,
+    cleanupIntervalMs: 60 * 60 * 1000,
   });
 
   if (dbError || !db) {
@@ -61,7 +59,7 @@ async function main() {
     process.exit(1);
   }
 
-  // 3. Initialize Services
+  // 3. Initialize Gemini Service (used for /summary command)
   const [geminiError, geminiService] = createGeminiService({
     apiKey: config.assistant.geminiApiKey,
     model: config.assistant.geminiModel,
@@ -72,17 +70,7 @@ async function main() {
     process.exit(1);
   }
 
-  const [contextError, contextService] = createContextService({
-    database: db,
-    maxMessages: config.assistant.maxHistoryMessages,
-  });
-
-  if (contextError || !contextService) {
-    auditLog.record(contextError?.code || 'CTX_INIT_FAIL', { error: contextError?.message });
-    process.exit(1);
-  }
-
-  // 4. Initialize Handlers & Middleware
+  // 4. Initialize Handlers
   const mediaHandler = createMediaHandler({
     targetGroupId: config.bot.targetGroupId,
   });
@@ -96,12 +84,8 @@ async function main() {
     database: db,
   });
 
-  const aiHandler = createAIHandler({
-      geminiService,
-      contextService,
-      botUsername: '@Spell_ZauberBot', // Hardcoded for now, or could fetch from bot info
-      systemPrompt: config.assistant.systemPrompt,
-      token: config.bot.token,
+  const summaryHandler = createSummaryHandler({
+    geminiService,
   });
 
   const [rlError, rateLimiter] = createRateLimiter({
@@ -112,77 +96,86 @@ async function main() {
   // 5. Setup Bot
   const bot = new Bot(config.bot.token);
 
-  // Register Middleware
+  // Register rate limiter middleware
   if (rateLimiter) {
-    // Wrap global message handling logic if needed, or Apply to specific commands
-    // For now, we apply it manually inside handlers or via a global middleware
     bot.use(async (ctx, next) => {
       const userId = ctx.from?.id;
       if (userId && !rateLimiter.isAllowed(userId)) {
-        // Simple check, real wrap logic is in the handler factory usually
-        // But since createRateLimiter returns a specific 'wrap' function, we can use it on specific handlers
-        // Or implement global check here:
-        const resetMs = rateLimiter.getResetTime(userId);
-        if (resetMs > 0) {
-             // Rate limited
-             return; 
-        }
+        return;
       }
       await next();
     });
   }
 
-  // Command: Start
-  bot.command('start', (ctx) => ctx.reply('Bot started! 🚀'));
+  // --- Commands ---
 
-  // Command: Game
+  bot.command('start', (ctx) => ctx.reply('Bot started! 🤖'));
+
   bot.command('game', async (ctx) => {
     try {
+      // Try sending as a registered game first
       await ctx.replyWithGame(config.bot.gameShortName);
-    } catch (e) {
-      console.error('Error sending game:', e);
-      await ctx.reply('⚠️ Game not found.');
+    } catch (e: any) {
+      console.error('Error sending game via replyWithGame:', e?.message || e);
+      
+      // Fallback: Send as a Web App button if game isn't registered with BotFather
+      try {
+        const gameUrl = `${config.server.url}/index.html`;
+        await ctx.reply('🎮 Chernomon Roulette', {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '🎲 Play Chernomon!', web_app: { url: gameUrl } }
+            ]]
+          }
+        });
+      } catch (fallbackErr) {
+        console.error('Fallback game button also failed:', fallbackErr);
+        await ctx.reply('🎮 Game is not available right now. Make sure SERVER_URL is set to a public HTTPS URL.');
+      }
     }
   });
 
-  // Command: Leaderboard
   bot.command('leaderboard', leaderboardHandler.handleCommand);
 
-  // Command: TODO (Legacy)
-  bot.hears(/#TODO/i, async (ctx) => {
-      // Security: Only Admin can use this
-      if (ctx.from?.id !== config.bot.adminId) {
-          return ctx.reply('⚠️ Somente o administrador pode usar este comando.');
-      }
+  bot.command('summary', summaryHandler.handleCommand);
 
-      const text = ctx.message?.text || '';
-      const user = ctx.from?.first_name || 'Desconhecido';
-      const task = text.replace(/#TODO/i, '').trim();
-      if (!task) return ctx.reply('⚠️ Use: #TODO Sua tarefa');
-      try {
-          await todoService.addTodo(task, user);
-          await ctx.reply(`✅ Tarefa anotada!\n📝 *${task}*`, { parse_mode: 'Markdown' });
-      } catch (e) { await ctx.reply('❌ Erro.'); }
+  // Legacy TODO command
+  bot.hears(/#TODO/i, async (ctx) => {
+    if (ctx.from?.id !== config.bot.adminId) {
+      return ctx.reply('🚫 Somente o administrador pode usar este comando.');
+    }
+
+    const text = ctx.message?.text || '';
+    const user = ctx.from?.first_name || 'Desconhecido';
+    const task = text.replace(/#TODO/i, '').trim();
+    if (!task) return ctx.reply('📝 Use: #TODO Sua tarefa');
+    try {
+      await todoService.addTodo(task, user);
+      await ctx.reply(`✅ Tarefa anotada!\n📌 *${task}*`, { parse_mode: 'Markdown' });
+    } catch (e) {
+      await ctx.reply('❌ Erro.');
+    }
   });
 
-  // Message Handler (Media + AI + Duylhou)
+  // --- Message Handler (Media + Duylhou + Message Collection) ---
   bot.on('message', async (ctx) => {
-    // 1. Check for Rate Limit (consume slot)
-    // (Ideally integrated via middleware, simplified here)
-    
+    // 1. Collect messages for /summary (passive, no response)
+    summaryHandler.collectMessage(ctx);
+
     // 2. Check for Social Media Links (Media Handler)
     await mediaHandler.handleMessage(ctx);
 
     // 3. Check for Repeated Links (Duylhou)
     await duylhouHandler.handleMessage(ctx);
 
-    // 4. AI Logic
-    await aiHandler.handleMessage(ctx);
+    // NOTE: No more freeform AI responses here.
+    // AI functionality is now exclusively command-based (/summary).
   });
 
-  // Callback Queries
+  // Callback Queries (Game)
   bot.on('callback_query:game_short_name', async (ctx) => {
-    const url = `${config.server.url}/index.html`; 
+    const userId = ctx.from?.id || '';
+    const url = `${config.server.url}/index.html?userId=${userId}`;
     await ctx.answerCallbackQuery({ url });
   });
 
@@ -190,83 +183,83 @@ async function main() {
   const app = express();
   app.use(cors());
   app.use(express.json());
-  app.use(express.static(path.join(__dirname, '../public'))); 
+  app.use(express.static(path.join(__dirname, '../public')));
 
-  // Game API Routes (Legacy - should be refactored to new architecture eventually)
+  const buildGameResponse = (session: any) => {
+    const response: any = {
+      phase: session.state,
+      generation: session.generation,
+      gender: session.gender,
+      team: session.team,
+      badges: session.badges,
+      round: session.round,
+      items: session.items,
+      lastEventResult: session.lastEventResult,
+      lastEvent: session.lastEvent,
+      lastCapturedPokemon: session.lastCapturedPokemon || null,
+    };
+
+    // Include gym leader data when in GYM_BATTLE state
+    if (session.state === 'GYM_BATTLE') {
+      const leader = getGymLeader(session.generation, session.badges);
+      response.gymLeader = leader;
+    }
+
+    return response;
+  };
+
   app.get('/api/game/state', async (req, res) => {
-      const userId = Number(req.query.userId);
-      if (!userId) return res.status(400).json({ error: 'Missing userId' });
-      const session = await gameService.getSession(userId);
-      res.json({
-          phase: session.state,
-          generation: session.generation,
-          gender: session.gender,
-          team: session.team,
-          badges: session.badges,
-          round: session.round,
-          items: session.items,
-          lastEventResult: session.lastEventResult
-      });
+    const userId = Number(req.query.userId);
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
+    const session = await gameService.getSession(userId);
+    res.json(buildGameResponse(session));
   });
-  
-  // ... (Other Game API routes omitted for brevity, keeping legacy flow) ...
+
   app.post('/api/game/action', async (req, res) => {
     const { userId, action, selection } = req.body;
-    
-    if (!userId) {
-        return res.status(400).json({ error: 'Missing userId' });
-    }
-    
-    let session = await gameService.getSession(userId);
-    
-    try {
-        switch (action) {
-            case 'CONFIRM_GEN':
-                // Safe transition: only moves forward if in GEN_ROULETTE
-                // Calling twice does nothing (idempotent)
-                session = await gameService.confirmGeneration(userId);
-                break;
-                
-            case 'SELECT_GENDER':
-                // Validates selection and only works in GENDER_ROULETTE state
-                if (selection === 'male' || selection === 'female') {
-                    session = await gameService.selectGender(userId, selection);
-                }
-                break;
-                
-            case 'SPIN_STARTER':
-                await gameService.spinStarter(userId);
-                // Re-fetch to get updated session with new team member
-                session = await gameService.getSession(userId);
-                break;
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
 
-            case 'SPIN_START_ADVENTURE':
-                await gameService.spinStartAdventure(userId);
-                session = await gameService.getSession(userId);
-                break;
-                
-            case 'RESET':
-                session = await gameService.resetSession(userId);
-                break;
-                
-            // ... other existing cases
-        }
-        
-        res.json({
-            phase: session.state,
-            generation: session.generation,
-            gender: session.gender,
-            team: session.team,
-            badges: session.badges,
-            round: session.round,
-            items: session.items,
-            lastEventResult: session.lastEventResult,
-            lastEvent: session.lastEvent
-        });
-        
+    let session = await gameService.getSession(userId);
+
+    try {
+      switch (action) {
+        case 'CONFIRM_GEN':
+          session = await gameService.confirmGeneration(userId);
+          break;
+        case 'SELECT_GENDER':
+          if (selection === 'male' || selection === 'female') {
+            session = await gameService.selectGender(userId, selection);
+          }
+          break;
+        case 'SPIN_STARTER':
+          await gameService.spinStarter(userId);
+          session = await gameService.getSession(userId);
+          break;
+        case 'SPIN_START_ADVENTURE':
+          await gameService.spinStartAdventure(userId);
+          session = await gameService.getSession(userId);
+          break;
+        case 'SPIN_MAIN_ADVENTURE':
+          await gameService.spinMainAdventure(userId);
+          session = await gameService.getSession(userId);
+          break;
+        case 'GYM_FIGHT':
+          await gameService.fightGym(userId);
+          session = await gameService.getSession(userId);
+          break;
+        case 'EVOLVE':
+          await gameService.checkEvolution(userId);
+          session = await gameService.getSession(userId);
+          break;
+        case 'RESET':
+          session = await gameService.resetSession(userId);
+          break;
+      }
+
+      res.json(buildGameResponse(session));
     } catch (e) {
-        console.error('Action error:', e);
-        res.status(500).json({ error: 'Internal server error' });
+      console.error('Action error:', e);
+      res.status(500).json({ error: 'Internal server error' });
     }
   });
 
@@ -275,12 +268,11 @@ async function main() {
     console.log(`Web Server running on port ${config.server.port}`);
   });
 
-  // Error Handling
   bot.catch((err) => {
     const ctx = err.ctx;
     console.error(`Error while handling update ${ctx.update.update_id}:`);
     const e = err.error;
-    
+
     if (e instanceof GrammyError) {
       if (e.description.includes('kicked from the group')) {
         console.warn('⚠️ Bot was kicked from a group. Ignoring update.');
@@ -295,9 +287,8 @@ async function main() {
   });
 
   bot.start();
-  console.log('Bot started with new architecture!');
+  console.log('Bot started! AI is now command-based only (/summary).');
 
-  // Handle graceful shutdown
   process.on('SIGINT', async () => {
     console.log('Shutting down...');
     await db.shutdown();
@@ -306,7 +297,6 @@ async function main() {
   });
 }
 
-// Run Main
 main().catch((err) => {
   console.error('Fatal error:', err);
   process.exit(1);
