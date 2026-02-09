@@ -124,7 +124,6 @@ export function createDebugHandler(config: DebugHandlerConfig): DebugHandler {
       `🔗 Active Links: ${stats.links}`,
       `🔄 Duylhou Incidents: ${stats.incidents}`,
       `🏆 Leaderboard Entries: ${stats.leaderboardEntries}`,
-      `🎮 Game Sessions: ${stats.gameSessions}`,
       `⏱️ Rate Limit Records: ${stats.rateLimits}`,
       '',
       `🧹 Last Cleanup: ${lastCleanupStr}`,
@@ -162,7 +161,6 @@ export function createDebugHandler(config: DebugHandlerConfig): DebugHandler {
       result.linksRemoved +
       result.incidentsRemoved +
       result.leaderboardEntriesRemoved +
-      result.sessionsRemoved +
       result.rateLimitsRemoved;
 
     if (totalRemoved === 0) {
@@ -187,9 +185,6 @@ export function createDebugHandler(config: DebugHandlerConfig): DebugHandler {
     }
     if (result.leaderboardEntriesRemoved > 0) {
       lines.push(`🏆 Leaderboard: ${result.leaderboardEntriesRemoved} removed`);
-    }
-    if (result.sessionsRemoved > 0) {
-      lines.push(`🎮 Sessions: ${result.sessionsRemoved} removed`);
     }
     if (result.rateLimitsRemoved > 0) {
       lines.push(`⏱️ Rate Limits: ${result.rateLimitsRemoved} removed`);

@@ -75,42 +75,28 @@ const CONTENT_PATTERNS: Array<{
  * Extracts all URLs from a text message
  */
 export function extractUrls(text: string): string[] {
-  // Match URLs with common protocols
   const urlPattern = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
   const matches = text.match(urlPattern);
   
   if (!matches) return [];
   
-  // Clean up trailing punctuation
-  return matches.map(url => {
-    // Remove trailing punctuation that's likely not part of the URL
-    return url.replace(/[.,;:!?)]+$/, '');
-  });
+  return matches.map(url => url.replace(/[.,;:!?)]+$/, ''));
 }
 
 /**
  * Normalizes a URL for comparison.
- * 
- * - Removes tracking parameters
- * - Extracts content IDs for known platforms
- * - Lowercases hostname
- * - Removes www prefix
- * - Removes trailing slashes
  */
 export function normalizeUrl(url: string): string {
-  // First, check if it matches a known content pattern
+  // Check specific content patterns first (e.g. Reels, YouTube IDs)
   for (const { pattern, normalize } of CONTENT_PATTERNS) {
     const match = url.match(pattern);
-    if (match) {
-      return normalize(match);
-    }
+    if (match) return normalize(match);
   }
 
-  // Generic URL normalization
   const parsed = safeParseUrl(url);
   if (!parsed) return url.toLowerCase();
 
-  // Remove tracking parameters
+  // Remove tracking parameters generically
   const cleanParams = new URLSearchParams();
   parsed.searchParams.forEach((value, key) => {
     if (!TRACKING_PARAMS.has(key.toLowerCase())) {
@@ -118,85 +104,31 @@ export function normalizeUrl(url: string): string {
     }
   });
 
-  // Build normalized URL
   let normalized = parsed.hostname.toLowerCase();
-  
-  // Remove www prefix
-  if (normalized.startsWith('www.')) {
-    normalized = normalized.slice(4);
-  }
+  if (normalized.startsWith('www.')) normalized = normalized.slice(4);
 
-  // Add path (remove trailing slash)
   let pathname = parsed.pathname;
-  if (pathname.endsWith('/') && pathname.length > 1) {
-    pathname = pathname.slice(0, -1);
-  }
+  if (pathname.endsWith('/') && pathname.length > 1) pathname = pathname.slice(0, -1);
+  
   normalized += pathname.toLowerCase();
-
-  // Add cleaned params if any
   const paramsString = cleanParams.toString();
-  if (paramsString) {
-    normalized += '?' + paramsString;
-  }
+  if (paramsString) normalized += '?' + paramsString;
 
   return normalized;
 }
 
-/**
- * Safely parses a URL, returning null on failure
- */
 function safeParseUrl(url: string): URL | null {
-  return Promise.resolve()
-    .then(() => new URL(url))
-    .catch(() => null) as unknown as URL | null;
-  
-  // Sync version for simplicity
-  try {
-    return new URL(url);
-  } catch {
-    return null;
-  }
+  try { return new URL(url); } catch { return null; }
 }
 
 /**
- * Checks if a URL is a social media or content link worth tracking
+ * Extracts and normalizes ALL links found in a message.
+ * No domain restriction.
  */
-export function isTrackableUrl(url: string): boolean {
-  const trackableDomains = [
-    'instagram.com',
-    'twitter.com',
-    'x.com',
-    'youtube.com',
-    'youtu.be',
-    'tiktok.com',
-    'vm.tiktok.com',
-    'reddit.com',
-    'threads.net',
-    'facebook.com',
-    'fb.watch',
-    'twitch.tv',
-    'clips.twitch.tv',
-  ];
-
-  const normalizedLower = url.toLowerCase();
-  return trackableDomains.some(domain => normalizedLower.includes(domain));
-}
-
-/**
- * Extracts and normalizes all trackable URLs from a message
- */
-export function extractTrackableUrls(text: string): Array<{ original: string; normalized: string }> {
+export function extractAndNormalizeUrls(text: string): Array<{ original: string; normalized: string }> {
   const urls = extractUrls(text);
-  const results: Array<{ original: string; normalized: string }> = [];
-
-  for (const url of urls) {
-    if (isTrackableUrl(url)) {
-      results.push({
-        original: url,
-        normalized: normalizeUrl(url),
-      });
-    }
-  }
-
-  return results;
+  return urls.map(url => ({
+    original: url,
+    normalized: normalizeUrl(url),
+  }));
 }

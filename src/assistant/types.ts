@@ -41,6 +41,11 @@ export interface ChatMessage {
     data: Buffer;
     mimeType: string;
   }[];
+  /** Video file data for multimodal models that accept inline video. */
+  video?: {
+    data: Buffer;
+    mimeType: string;
+  };
 }
 
 /**

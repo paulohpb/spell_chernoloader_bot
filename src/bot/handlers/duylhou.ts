@@ -1,51 +1,114 @@
 /**
  * =============================================================================
- * Duylhou Handler - Detects and calls out repeated links
- * 
- * "Duylhou" is a group inside joke for when someone posts content that
- * was already shared and discussed earlier. The bot will reply to the
- * original message and tag the reposter.
+ * Duylhou Handler — duplicate-link detector & group-joke responder
+ *
+ * When a user posts a link that was already shared (and is still within the
+ * expiry window) the bot replies **to that user's message** with a sticker
+ * (if configured) or a plain-text fallback.  The incident is recorded on the
+ * leaderboard so the group can keep score.
+ *
+ * Sticker behaviour
+ * -----------------
+ * Telegram stickers are referenced by a stable `file_id` string.  To obtain
+ * one: forward any sticker to @getidsbot — it will reply with the file_id.
+ * Set that value in `.env` as `DUYLHOU_STICKER_FILE_ID`.  When the value is
+ * empty the handler falls back to a short text reply.
  * =============================================================================
  */
 
 import { Context } from 'grammy';
-import { Database, extractTrackableUrls } from '../../database';
+import { Database, extractAndNormalizeUrls } from '../../database';
 import { auditLog } from '../../assistant/audit-log';
 
-/**
- * Duylhou handler configuration
- */
-export interface DuylhouHandlerConfig {
-  database: Database;
-  targetChatIds?: number[];  // Optional: only check in these chats
-  ignoredUserIds?: number[]; // Optional: users to ignore (e.g., bots)
-}
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
 
 /**
- * Duylhou handler interface
+ * Configuration for the Duylhou handler.
  */
+export interface DuylhouHandlerConfig {
+  /** The central database instance (for link storage & leaderboard). */
+  database: Database;
+  /** Only react in these chat IDs.  Empty / undefined = all chats. */
+  targetChatIds?: number[];
+  /** User IDs to skip entirely (e.g. the bot's own ID). */
+  ignoredUserIds?: number[];
+  /**
+   * Telegram sticker `file_id` to send on a Duylhou hit.
+   * Empty string → fall back to a text reply.
+   */
+  duylhouStickerFileId?: string;
+}
+
+/** Public surface of the handler. */
 export interface DuylhouHandler {
+  /** Call this for every incoming message. */
   handleMessage: (ctx: Context) => Promise<void>;
 }
 
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
 /**
  * Creates the Duylhou handler.
- * 
- * Factory function pattern - returns a closure of methods.
- * 
- * @param config - Handler configuration
- * @returns DuylhouHandler instance
+ *
+ * @param config - See {@link DuylhouHandlerConfig}.
+ * @returns A handler object with a single `handleMessage` method.
  */
 export function createDuylhouHandler(config: DuylhouHandlerConfig): DuylhouHandler {
-  const { database, targetChatIds, ignoredUserIds } = config;
+  const { database, targetChatIds, ignoredUserIds, duylhouStickerFileId } = config;
 
   /**
-   * Handles incoming messages, checking for repeated links
+   * Sends either the configured sticker or a plain-text "Duylhou!" reply,
+   * always quoting the offender's own message so the callout lands visually
+   * right below it.
+   *
+   * @param ctx       - Grammy context (carries the Telegram API client).
+   * @param chatId    - The chat to send into.
+   * @param messageId - The offender's message ID (used as the reply target).
+   */
+  async function sendDuylhouResponse(
+    ctx: Context,
+    chatId: number,
+    messageId: number,
+  ): Promise<void> {
+    const replyParams = {
+      reply_parameters: {
+        message_id: messageId,
+        allow_sending_without_reply: true,
+      },
+    };
+
+    if (duylhouStickerFileId) {
+      // Send the pre-uploaded sticker by its file_id.
+      await ctx.api
+        .sendSticker(chatId, duylhouStickerFileId, replyParams)
+        .catch((e: Error) => {
+          // If the sticker send fails (e.g. file_id expired / wrong chat type)
+          // fall back to text so the user still sees the callout.
+          auditLog.trace(`Duylhou: sticker send failed (${e.message}), falling back to text`);
+          return ctx.api.sendMessage(chatId, 'Duylhou! 🔄', replyParams).catch(() => {});
+        });
+    } else {
+      // No sticker configured — plain text.
+      await ctx.api
+        .sendMessage(chatId, 'Duylhou! 🔄', replyParams)
+        .catch(() => {});
+    }
+  }
+
+  /**
+   * Main entry point — called for every incoming message.
+   * Extracts trackable URLs, checks each against the link index,
+   * and fires the Duylhou response on the first duplicate hit.
+   *
+   * @param ctx - Grammy context for the incoming message.
    */
   async function handleMessage(ctx: Context): Promise<void> {
-    // Only process messages with text
     if (!ctx.message) return;
-    
+
     const text = ctx.message.text || ctx.message.caption || '';
     if (!text) return;
 
@@ -55,72 +118,44 @@ export function createDuylhouHandler(config: DuylhouHandlerConfig): DuylhouHandl
 
     if (!chatId || !userId) return;
 
-    // Check if we should process this chat
-    // Allow if private chat OR if it's in the target list
+    // Scope check — honour targetChatIds when set.
     const isPrivate = ctx.chat?.type === 'private';
-    const isTarget = targetChatIds && targetChatIds.includes(chatId);
+    const isTarget  = targetChatIds && targetChatIds.includes(chatId);
+    if (!isPrivate && targetChatIds && targetChatIds.length > 0 && !isTarget) return;
 
-    if (!isPrivate && targetChatIds && targetChatIds.length > 0 && !isTarget) {
-      return;
-    }
+    // User ignore-list (e.g. the bot itself).
+    if (ignoredUserIds && ignoredUserIds.includes(userId)) return;
 
-    // Check if user should be ignored
-    if (ignoredUserIds && ignoredUserIds.includes(userId)) {
-      return;
-    }
-
-    // Extract trackable URLs
-    const urls = extractTrackableUrls(text);
+    // ---------------------------------------------------------------------------
+    // URL extraction & duplicate check
+    // ---------------------------------------------------------------------------
+    const urls = extractAndNormalizeUrls(text);
     if (urls.length === 0) return;
 
-    auditLog.trace(`Duylhou: checking ${urls.length} URLs from user ${userId}`);
+    auditLog.trace(`Duylhou: checking ${urls.length} URL(s) from user ${userId}`);
 
-    // Check each URL for duplicates
     for (const { original, normalized } of urls) {
       const existingLink = database.findLink(normalized, chatId);
 
       if (existingLink && existingLink.userId !== userId) {
-        // Found a duplicate from a different user!
-        auditLog.trace(`Duylhou: duplicate found! Original by user ${existingLink.userId}, message ${existingLink.messageId}`);
-
-        // Record the incident for leaderboard
-        database.recordDuylhouIncident(
-          userId,                    // offender
-          existingLink.userId,       // original poster
-          chatId,
-          normalized
+        // ── duplicate posted by a *different* user ──────────────────────
+        auditLog.trace(
+          `Duylhou: duplicate detected — original by user ${existingLink.userId} ` +
+          `(msg ${existingLink.messageId}), repeated by ${userId} (msg ${messageId})`,
         );
 
-        // Reply to the original message
-        const response = await ctx.api.sendMessage(
-          chatId,
-          `Duylhou! 🔄`,
-          {
-            reply_parameters: {
-              message_id: existingLink.messageId,
-              allow_sending_without_reply: true,
-            },
-          }
-        ).catch((e: Error) => {
-          // If we can't reply to the original (deleted?), reply to current
-          auditLog.trace(`Duylhou: couldn't reply to original message: ${e.message}`);
-          return null;
-        });
+        // Persist the incident for the monthly leaderboard.
+        database.recordDuylhouIncident(userId, existingLink.userId, chatId, normalized);
 
-        // If couldn't reply to original, reply to the new message
-        if (!response) {
-          await ctx.reply(`Duylhou! 🔄 (original message was deleted)`, {
-            reply_parameters: { message_id: messageId },
-          }).catch(() => {});
-        }
+        // Reply to the *offender's* message with sticker or text.
+        await sendDuylhouResponse(ctx, chatId, messageId);
 
-        // Don't add this link since it's a duplicate
-        // But we could update the record if we want to track the latest
+        // First duplicate wins — stop scanning remaining URLs in this message.
         return;
       }
 
       if (!existingLink) {
-        // New link, add it to the database
+        // Brand-new link — register it so future duplicates can be caught.
         database.addLink({
           url: original,
           normalizedUrl: normalized,
@@ -128,14 +163,11 @@ export function createDuylhouHandler(config: DuylhouHandlerConfig): DuylhouHandl
           userId,
           messageId,
         });
-        
         auditLog.trace(`Duylhou: registered new link from user ${userId}`);
       }
-      // If existingLink but same user, just ignore (they're reposting their own link)
+      // existingLink && same userId → user reposted their own link; ignore.
     }
   }
 
-  return {
-    handleMessage,
-  };
+  return { handleMessage };
 }

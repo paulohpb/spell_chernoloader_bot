@@ -16,9 +16,14 @@ import { auditLog } from './assistant/audit-log';
 
 export interface BotConfig {
   token: string;
-  gameShortName: string;
   targetGroupId: number;
   adminId: number;
+  /**
+   * Telegram sticker `file_id` sent by the bot on a Duylhou hit.
+   * Empty string = fall back to plain-text reply.
+   * See .env.example for how to obtain a sticker file_id.
+   */
+  duylhouStickerFileId: string;
 }
 
 export interface ServerConfig {
@@ -93,9 +98,9 @@ export function loadConfig(): [AppError | null, AppConfig | null] {
 
   const port = optionalEnvNumber('PORT', 3000);
   const serverUrl = optionalEnv('SERVER_URL', `http://localhost:${port}`);
-  const gameShortName = optionalEnv('GAME_SHORT_NAME', 'chernomon');
   const targetGroupId = optionalEnvNumber('TARGET_GROUP_ID', -1000000000000);
   const adminId = optionalEnvNumber('ADMIN_ID', 0);
+  const duylhouStickerFileId = optionalEnv('DUYLHOU_STICKER_FILE_ID', '');
   const geminiModel = optionalEnv('GEMINI_MODEL', 'gemini-2.5-flash');
   const maxHistoryMessages = optionalEnvNumber('MAX_HISTORY_MESSAGES', 20);
   const nodeEnv = optionalEnv('NODE_ENV', 'development');
@@ -111,9 +116,9 @@ export function loadConfig(): [AppError | null, AppConfig | null] {
   const config: AppConfig = {
     bot: {
       token: botToken!,
-      gameShortName,
       targetGroupId,
       adminId,
+      duylhouStickerFileId,
     },
     server: { port, url: serverUrl },
     assistant: {

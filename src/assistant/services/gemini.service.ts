@@ -144,58 +144,49 @@ export function createGeminiService(
     return [error, null];
   }
 
-  // Initialize the Google Generative AI client
-  let genAI: GoogleGenerativeAI;
-
-  // GEMINI_002: Failed to configure Gemini API
-  const configureResult = Promise.resolve()
-    .then(() => {
-      genAI = new GoogleGenerativeAI(apiKey);
-    })
-    .catch((e: Error) => {
-      const error = createLLMError(
-        LLM_ERROR_CODES.CONFIGURATION_FAILED,
-        'Failed to configure Gemini API',
-        e.message
-      );
-      auditLog.record(error.code, errorToObject(error));
-      return error;
-    });
-
-  // Since GoogleGenerativeAI constructor doesn't throw normally,
-  // we initialize it directly
-  genAI = new GoogleGenerativeAI(apiKey);
+  // Initialize the Google Generative AI client.
+  // The constructor is synchronous and does not throw under normal
+  // conditions — it only validates that the key is a non-empty string,
+  // which we already checked above.
+  const genAI = new GoogleGenerativeAI(apiKey);
 
   auditLog.trace(`Gemini service initialized with model: ${model}`);
 
   /**
-   * Gets a GenerativeModel instance with optional system instruction.
+   * Instantiates a {@link GenerativeModel} with the given system
+   * instruction and the module-level safety settings.
+   * Shared by {@link getCompletion} and {@link streamCompletion}.
+   *
+   * @param systemInstruction - Optional system prompt forwarded to the model.
+   * @returns A result tuple: `[null, model]` on success, `[error, null]` on failure.
    */
-  function getModel(systemInstruction?: string): [AppError | null, GenerativeModel | null] {
-    return Promise.resolve()
-      .then(() => {
-        const modelInstance = genAI.getGenerativeModel({
-          model,
-          systemInstruction,
-          safetySettings: SAFETY_SETTINGS,
-        });
-        return [null, modelInstance] as [null, GenerativeModel];
-      })
-      .catch((e: Error) => {
-        const error = createLLMError(
-          LLM_ERROR_CODES.MODEL_CREATION_FAILED,
-          'Failed to create Gemini model',
-          e.message
-        );
-        auditLog.record(error.code, errorToObject(error));
-        return [error, null] as [AppError, null];
-      }) as unknown as [AppError | null, GenerativeModel | null];
+  function resolveModel(systemInstruction?: string): [AppError | null, GenerativeModel | null] {
+    try {
+      const instance = genAI.getGenerativeModel({
+        model,
+        systemInstruction,
+        safetySettings: SAFETY_SETTINGS,
+      });
+      return [null, instance];
+    } catch (e: unknown) {
+      const error = createLLMError(
+        LLM_ERROR_CODES.MODEL_CREATION_FAILED,
+        'Failed to create Gemini model',
+        (e as Error).message,
+      );
+      auditLog.record(error.code, errorToObject(error));
+      return [error, null];
+    }
   }
 
   /**
    * Gets a completion from Gemini.
-   * 
+   *
    * GEMINI_004: Gemini API request failed
+   *
+   * @param messages - Conversation history in OpenAI-compatible format.
+   * @param options  - Token / temperature overrides.
+   * @returns Result tuple with the completion text or an error.
    */
   async function getCompletion(
     messages: ChatMessage[],
@@ -206,70 +197,41 @@ export function createGeminiService(
 
     auditLog.trace(`getCompletion called with ${messages.length} messages`);
 
-    // Get model instance
-    const modelResult = await Promise.resolve()
-      .then(() => {
-        return genAI.getGenerativeModel({
-          model,
-          systemInstruction,
-          safetySettings: SAFETY_SETTINGS,
-        });
-      })
-      .catch((e: Error) => {
-        const error = createLLMError(
-          LLM_ERROR_CODES.MODEL_CREATION_FAILED,
-          'Failed to create Gemini model',
-          e.message
-        );
-        auditLog.record(error.code, errorToObject(error));
-        return error;
-      });
+    const [modelError, generativeModel] = resolveModel(systemInstruction);
+    if (modelError || !generativeModel) return [modelError, null];
 
-    if (modelResult instanceof Object && 'code' in modelResult) {
-      return [modelResult as AppError, null];
+    const generationConfig: GenerationConfig = { maxOutputTokens: maxTokens, temperature };
+
+    try {
+      const chat: ChatSession = generativeModel.startChat({ history, generationConfig });
+      const result = await chat.sendMessage(lastUserMessage);
+      const text = result.response.text();
+
+      auditLog.trace(`getCompletion successful, response length: ${text.length}`);
+      return [null, text];
+    } catch (e: unknown) {
+      const error = createLLMError(
+        LLM_ERROR_CODES.REQUEST_FAILED,
+        'Gemini API request failed',
+        (e as Error).message,
+      );
+      auditLog.record(error.code, errorToObject(error));
+      return [error, null];
     }
-
-    const generativeModel = modelResult as GenerativeModel;
-
-    // Configure generation settings
-    const generationConfig: GenerationConfig = {
-      maxOutputTokens: maxTokens,
-      temperature,
-    };
-
-    // Start chat and send message
-    return Promise.resolve()
-      .then(async () => {
-        const chat: ChatSession = generativeModel.startChat({
-          history,
-          generationConfig,
-        });
-
-        const result = await chat.sendMessage(lastUserMessage);
-        const response = result.response;
-        const text = response.text();
-
-        auditLog.trace(`getCompletion successful, response length: ${text.length}`);
-        return [null, text] as [null, string];
-      })
-      .catch((e: Error) => {
-        const error = createLLMError(
-          LLM_ERROR_CODES.REQUEST_FAILED,
-          'Gemini API request failed',
-          e.message
-        );
-        auditLog.record(error.code, errorToObject(error));
-        return [error, null] as [AppError, null];
-      });
   }
 
   /**
-   * Streams a completion from Gemini.
-   * 
+   * Streams a completion from Gemini as an async generator.
+   *
    * GEMINI_005: Gemini streaming failed
-   * 
-   * Note: This is an async generator. Errors during streaming are yielded
-   * and the generator terminates. Check auditLog for error details.
+   *
+   * Errors during streaming are logged to the audit log and the
+   * generator terminates silently — the caller should treat an early
+   * end as a failure.
+   *
+   * @param messages       - Conversation history in OpenAI-compatible format.
+   * @param options        - Token / temperature overrides.
+   * @param chunkCallback  - Optional per-chunk hook (e.g. for live message edits).
    */
   async function* streamCompletion(
     messages: ChatMessage[],
@@ -281,45 +243,12 @@ export function createGeminiService(
 
     auditLog.trace(`streamCompletion called with ${messages.length} messages`);
 
-    // Get model instance
-    let generativeModel: GenerativeModel;
-    
-    const modelResult = await Promise.resolve()
-      .then(() => {
-        return genAI.getGenerativeModel({
-          model,
-          systemInstruction,
-          safetySettings: SAFETY_SETTINGS,
-        });
-      })
-      .catch((e: Error) => {
-        const error = createLLMError(
-          LLM_ERROR_CODES.MODEL_CREATION_FAILED,
-          'Failed to create Gemini model',
-          e.message
-        );
-        auditLog.record(error.code, errorToObject(error));
-        return error;
-      });
+    const [modelError, generativeModel] = resolveModel(systemInstruction);
+    if (modelError || !generativeModel) return;
 
-    if (modelResult instanceof Object && 'code' in modelResult) {
-      // Cannot yield error from generator, log and return
-      return;
-    }
+    const generationConfig: GenerationConfig = { maxOutputTokens: maxTokens, temperature };
 
-    generativeModel = modelResult as GenerativeModel;
-
-    // Configure generation settings
-    const generationConfig: GenerationConfig = {
-      maxOutputTokens: maxTokens,
-      temperature,
-    };
-
-    // Start chat and stream response
-    const chat: ChatSession = generativeModel.startChat({
-      history,
-      generationConfig,
-    });
+    const chat: ChatSession = generativeModel.startChat({ history, generationConfig });
 
     const streamResult = await chat.sendMessageStream(lastUserMessage)
       .catch((e: Error) => {
@@ -332,47 +261,19 @@ export function createGeminiService(
         return null;
       });
 
-    if (!streamResult) {
-      return;
-    }
+    if (!streamResult) return;
 
-    // Iterate over the stream
-    const iterateStream = async function* () {
-      for await (const chunk of streamResult.stream) {
-        const text = chunk.text();
-        if (text) {
-          // Call the chunk callback if provided
-          if (chunkCallback) {
-            const callbackResult = chunkCallback(text);
-            // Handle async callbacks
-            if (callbackResult instanceof Promise) {
-              await callbackResult;
-            }
-          }
-          yield text;
-        }
-      }
-    };
+    // Iterate over the stream with per-chunk error handling.
+    for await (const chunk of streamResult.stream) {
+      const text = chunk.text();
+      if (!text) continue;
 
-    // Wrap iteration in error handler
-    const iterator = iterateStream();
-    
-    while (true) {
-      const next = await iterator.next().catch((e: Error) => {
-        const error = createLLMError(
-          LLM_ERROR_CODES.STREAMING_FAILED,
-          'Gemini streaming failed',
-          e.message
-        );
-        auditLog.record(error.code, errorToObject(error));
-        return { done: true, value: undefined };
-      });
-
-      if (next.done) {
-        break;
+      if (chunkCallback) {
+        const callbackResult = chunkCallback(text);
+        if (callbackResult instanceof Promise) await callbackResult;
       }
 
-      yield next.value as string;
+      yield text;
     }
 
     auditLog.trace('streamCompletion finished');

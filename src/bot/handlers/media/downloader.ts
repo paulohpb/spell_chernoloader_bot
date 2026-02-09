@@ -9,7 +9,7 @@ import { Readable } from 'stream';
 import axios from 'axios';
 import { MEDIA_ERROR_CODES } from './types';
 import type { Result } from './types';
-import { SMUDGE_HEADERS } from './utils';
+import { SMUDGE_HEADERS } from './caption-formatter';
 
 /**
  * Opens an HTTP stream to the given media URL.

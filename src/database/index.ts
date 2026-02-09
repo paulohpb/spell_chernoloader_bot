@@ -17,14 +17,16 @@ export type {
   ConversationRecord,
   LinkRecord,
   RateLimitRecord,
-  GameSessionRecord,
   DuylhouIncident,
   DuylhouLeaderboardEntry,
+  TodoRecord,
+  SummaryRecord,
+  ChatMessageRecord,
+  UserMemoryRecord,
 } from './types';
 
 export {
   extractUrls,
   normalizeUrl,
-  isTrackableUrl,
-  extractTrackableUrls,
+  extractAndNormalizeUrls,
 } from './link-utils';

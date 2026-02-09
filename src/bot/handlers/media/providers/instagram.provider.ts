@@ -36,7 +36,7 @@
 import axios from 'axios';
 import { MEDIA_ERROR_CODES } from '../types';
 import type { MediaProvider, MediaInfo, Result, SyncResult } from '../types';
-import { SMUDGE_HEADERS, sleep } from '../utils';
+import { SMUDGE_HEADERS, sleep } from '../caption-formatter';
 
 export class InstagramProvider implements MediaProvider {
   readonly platform = 'Instagram' as const;

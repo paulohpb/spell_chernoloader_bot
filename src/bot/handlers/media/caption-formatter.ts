@@ -1,6 +1,6 @@
 /**
- * @module media/utils
- * Shared constants and text formatting helpers.
+ * @module media/caption-formatter
+ * Shared constants and text formatting helpers for the media pipeline.
  */
 
 /** Chrome-like HTTP headers used for scraping requests. */

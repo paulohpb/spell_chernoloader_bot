@@ -32,10 +32,8 @@ export type { AuditLog, AuditLogEntry } from './audit-log';
 // Services
 export { createGeminiService } from './services/gemini.service';
 
-// Context (conversation history)
-export { createContextService, CONTEXT_ERROR_CODES } from './context';
-export type {
-  ContextService,
-  ContextServiceConfig,
-  ConversationMessage,
-} from './context';
+// Context service — currently unused by any handler; kept on disk for future
+// use but intentionally not re-exported here to avoid dead-surface confusion.
+// Re-add the line below when a handler starts consuming it:
+//   export { createContextService, CONTEXT_ERROR_CODES } from './context';
+//   export type { ContextService, ContextServiceConfig, ConversationMessage } from './context';

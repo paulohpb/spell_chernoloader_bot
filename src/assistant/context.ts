@@ -41,10 +41,10 @@ export interface ContextServiceConfig {
  * Context service interface
  */
 export interface ContextService {
-  loadHistory: (userId: number, chatId?: number) => Result<ConversationMessage[]>;
-  addMessage: (userId: number, chatId: number, role: string, content: string) => Result<ConversationMessage>;
-  clearHistory: (userId: number, chatId?: number) => Result<number>;
-  getMessageCount: (userId: number, chatId?: number) => Result<number>;
+  loadHistory:    (userId: number, chatId?: number) => [AppError | null, ConversationMessage[] | null];
+  addMessage:     (userId: number, chatId: number, role: string, content: string) => [AppError | null, ConversationMessage | null];
+  clearHistory:   (userId: number, chatId?: number) => [AppError | null, number | null];
+  getMessageCount:(userId: number, chatId?: number) => [AppError | null, number | null];
   getMessagesForApi: (messages: ConversationMessage[], systemPrompt?: string) => ChatMessage[];
 }
 
@@ -74,39 +74,46 @@ export function createContextService(
   const { database, maxMessages } = config;
 
   /**
-   * Loads conversation history for a user
+   * Loads conversation history for a user.
+   *
+   * @param userId - Telegram user ID.
+   * @param chatId  - Optional chat scope.
+   * @returns Result tuple with the record array or an error.
    */
-  async function loadHistory(
+  function loadHistory(
     userId: number,
     chatId?: number
-  ): Result<ConversationMessage[]> {
-    return Promise.resolve()
-      .then(() => {
-        const records = database.getConversations(userId, chatId, maxMessages);
-        auditLog.trace(`Loaded ${records.length} messages for user ${userId}`);
-        return [null, records] as [null, ConversationMessage[]];
-      })
-      .catch((e: Error) => {
-        const error = createContextError(
-          'DB_QUERY_001',
-          'Failed to load conversation history',
-          `User ID: ${userId}, Error: ${e.message}`
-        );
-        auditLog.record(error.code, { userId, chatId, error: e.message });
-        return [error, null] as [AppError, null];
-      });
+  ): [AppError | null, ConversationMessage[] | null] {
+    try {
+      const records = database.getConversations(userId, chatId, maxMessages);
+      auditLog.trace(`Loaded ${records.length} messages for user ${userId}`);
+      return [null, records];
+    } catch (e: unknown) {
+      const error = createContextError(
+        'DB_QUERY_001',
+        'Failed to load conversation history',
+        `User ID: ${userId}, Error: ${(e as Error).message}`
+      );
+      auditLog.record(error.code, { userId, chatId, error: (e as Error).message });
+      return [error, null];
+    }
   }
 
   /**
-   * Adds a message to user's history
+   * Appends a message to the user's conversation history.
+   *
+   * @param userId  - Telegram user ID.
+   * @param chatId   - Telegram chat ID.
+   * @param role     - One of `"user"`, `"assistant"`, or `"system"`.
+   * @param content  - Non-empty message body.
+   * @returns Result tuple with the new record or a validation / DB error.
    */
-  async function addMessage(
+  function addMessage(
     userId: number,
     chatId: number,
     role: string,
     content: string
-  ): Result<ConversationMessage> {
-    // Validate role
+  ): [AppError | null, ConversationMessage | null] {
     if (role !== 'user' && role !== 'assistant' && role !== 'system') {
       const error = createContextError(
         CONTEXT_ERROR_CODES.INVALID_ROLE,
@@ -117,7 +124,6 @@ export function createContextService(
       return [error, null];
     }
 
-    // Validate content
     if (!content || typeof content !== 'string') {
       const error = createContextError(
         CONTEXT_ERROR_CODES.INVALID_CONTENT,
@@ -128,81 +134,75 @@ export function createContextService(
       return [error, null];
     }
 
-    return Promise.resolve()
-      .then(() => {
-        const record = database.addConversation({
-          userId,
-          chatId,
-          role: role as 'user' | 'assistant' | 'system',
-          content,
-        });
-
-        // Check if we need to trim old messages
-        const allRecords = database.getConversations(userId, chatId);
-        if (allRecords.length > maxMessages) {
-          // The database handles this internally via the limit parameter
-          // when reading, but we could also clean up here if needed
-        }
-
-        auditLog.trace(`Added ${role} message for user ${userId}`);
-        return [null, record] as [null, ConversationMessage];
-      })
-      .catch((e: Error) => {
-        const error = createContextError(
-          'DB_QUERY_002',
-          'Failed to add message to history',
-          `User ID: ${userId}, Error: ${e.message}`
-        );
-        auditLog.record(error.code, { userId, chatId, error: e.message });
-        return [error, null] as [AppError, null];
+    try {
+      const record = database.addConversation({
+        userId,
+        chatId,
+        role: role as 'user' | 'assistant' | 'system',
+        content,
       });
+      auditLog.trace(`Added ${role} message for user ${userId}`);
+      return [null, record];
+    } catch (e: unknown) {
+      const error = createContextError(
+        'DB_QUERY_002',
+        'Failed to add message to history',
+        `User ID: ${userId}, Error: ${(e as Error).message}`
+      );
+      auditLog.record(error.code, { userId, chatId, error: (e as Error).message });
+      return [error, null];
+    }
   }
 
   /**
-   * Clears conversation history for a user
+   * Clears conversation history for a user, optionally scoped to one chat.
+   *
+   * @param userId - Telegram user ID.
+   * @param chatId  - If provided, only this chat is cleared.
+   * @returns Result tuple with the number of removed records or an error.
    */
-  async function clearHistory(
+  function clearHistory(
     userId: number,
     chatId?: number
-  ): Result<number> {
-    return Promise.resolve()
-      .then(() => {
-        const count = database.clearConversations(userId, chatId);
-        auditLog.trace(`Cleared ${count} messages for user ${userId}`);
-        return [null, count] as [null, number];
-      })
-      .catch((e: Error) => {
-        const error = createContextError(
-          'DB_QUERY_003',
-          'Failed to clear conversation history',
-          `User ID: ${userId}, Error: ${e.message}`
-        );
-        auditLog.record(error.code, { userId, chatId, error: e.message });
-        return [error, null] as [AppError, null];
-      });
+  ): [AppError | null, number | null] {
+    try {
+      const count = database.clearConversations(userId, chatId);
+      auditLog.trace(`Cleared ${count} messages for user ${userId}`);
+      return [null, count];
+    } catch (e: unknown) {
+      const error = createContextError(
+        'DB_QUERY_003',
+        'Failed to clear conversation history',
+        `User ID: ${userId}, Error: ${(e as Error).message}`
+      );
+      auditLog.record(error.code, { userId, chatId, error: (e as Error).message });
+      return [error, null];
+    }
   }
 
   /**
-   * Gets the number of messages in history for a user
+   * Returns the number of messages currently stored for a user.
+   *
+   * @param userId - Telegram user ID.
+   * @param chatId  - If provided, count only this chat's messages.
+   * @returns Result tuple with the count or an error.
    */
-  async function getMessageCount(
+  function getMessageCount(
     userId: number,
     chatId?: number
-  ): Result<number> {
-    return Promise.resolve()
-      .then(() => {
-        const records = database.getConversations(userId, chatId);
-        return [null, records.length] as [null, number];
-      })
-      .catch((e: Error) => {
-        const error = createContextError(
-          'DB_QUERY_004',
-          'Failed to get message count',
-          `User ID: ${userId}, Error: ${e.message}`
-        );
-        auditLog.record(error.code, { userId, chatId, error: e.message });
-        return [error, null] as [AppError, null];
-      });
+  ): [AppError | null, number | null] {
+    try {
+      const records = database.getConversations(userId, chatId);
+      return [null, records.length];
+    } catch (e: unknown) {
+      const error = createContextError(
+        'DB_QUERY_004',
+        'Failed to get message count',
+        `User ID: ${userId}, Error: ${(e as Error).message}`
+      );
+      auditLog.record(error.code, { userId, chatId, error: (e as Error).message });
+      return [error, null];
+    }
   }
 
   /**

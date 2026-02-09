@@ -15,7 +15,7 @@ import { Context, InputFile, InlineKeyboard } from 'grammy';
 import type { MediaInfo, MediaHandlerConfig, MediaHandler, QueuedJob } from './types';
 import { providers } from './providers';
 import { downloadStream } from './downloader';
-import { escapeMarkdown, truncate } from './utils';
+import { escapeMarkdown, truncate } from './caption-formatter';
 import { ProcessingQueue } from './queue';
 import { ThrottledEditor } from './throttled-editor';
 

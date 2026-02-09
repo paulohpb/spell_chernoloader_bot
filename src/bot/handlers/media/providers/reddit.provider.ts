@@ -7,7 +7,7 @@
 import axios from 'axios';
 import { MEDIA_ERROR_CODES } from '../types';
 import type { MediaProvider, MediaInfo, Result } from '../types';
-import { SMUDGE_HEADERS } from '../utils';
+import { SMUDGE_HEADERS } from '../caption-formatter';
 
 export class RedditProvider implements MediaProvider {
   readonly platform = 'Reddit' as const;

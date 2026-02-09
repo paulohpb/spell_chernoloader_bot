@@ -18,7 +18,7 @@
  */
 
 import type { QueuedJob } from './types';
-import { escapeMarkdown } from './utils';
+import { escapeMarkdown } from './caption-formatter';
 import { ThrottledEditor } from './throttled-editor';
 
 /**
